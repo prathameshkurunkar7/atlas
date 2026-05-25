@@ -1,137 +1,92 @@
 # Images
 
 One image for this iteration: **Ubuntu 24.04** from Firecracker CI. The image
-is the (kernel, rootfs) pair the Firecracker docs reference in their
-[getting started guide](../llm/references/firecracker/docs/getting-started.md).
+is the (kernel, rootfs) pair referenced in the Firecracker getting-started
+guide.
 
 ## Image record
 
-A `VM Image` document (see [02-doctypes.md](./02-doctypes.md)) carries:
+A `Virtual Machine Image` document (see [02-doctypes.md](./02-doctypes.md))
+holds:
 
 - URL of the kernel binary.
 - URL of the source squashfs rootfs.
 - SHA-256 of each.
-- Filenames to store them under on the host.
-- A `default_disk_gb` used when a VM doesn't override it.
+- Filenames the server uses to store them.
+- A `default_disk_gigabytes` used when a VM doesn't override it.
 
-Image bytes never live in the Frappe DB. They live as files on each metal
-node, and as a URL anywhere else.
+Image bytes never live in the Frappe DB. They live as files on each server
+and as a URL anywhere else.
 
-## Sync to a node
+## Sync to a server
 
-Triggered by:
+One Task per server-image pair, running
+[`scripts/sync-image.sh`](../scripts/sync-image.sh).
 
-- A button on `VM Image` (sync to every active node).
-- A button on `Metal Node` (sync one image, or all active images).
-- Implicitly by VM provisioning, if the image is missing.
+The script:
 
-The sync runs as a series of SSH commands on the target node:
+1. Ensures the kernel file exists on the server. Downloads and checksums if
+   not.
+2. Ensures the rootfs ext4 exists. Downloads the source squashfs,
+   unsquashes it, drops in `/etc/systemd/system/atlas-network.service` and
+   a placeholder `/etc/atlas-network.env`, and packs the result into an ext4
+   of `default_disk_gigabytes`. Skips if the rootfs is already present.
 
-1. `install -d -m 0700 /var/lib/atlas/images/{image_name}/`.
+The guest unit file [`scripts/guest/atlas-network.service`](../scripts/guest/atlas-network.service)
+is uploaded to the server alongside `sync-image.sh` before the script runs.
+The script's `GUEST_NETWORK_UNIT` env var points at it. Keeping the unit
+file as a real file (not a heredoc inside the script) means we can lint it,
+diff it, and edit it without touching shell code.
 
-2. If the kernel file is already present **and** its sha256 matches: skip.
-   Else:
-   ```bash
-   curl -fsSL --output /var/lib/atlas/images/{image_name}/{kernel_filename}.part \
-       '{kernel_url}'
-   echo '{kernel_sha256}  /var/lib/atlas/images/{image_name}/{kernel_filename}.part' \
-       | sha256sum -c -
-   mv /var/lib/atlas/images/{image_name}/{kernel_filename}.part \
-      /var/lib/atlas/images/{image_name}/{kernel_filename}
-   ```
+### Why we convert squashfs → ext4 server-side
 
-3. For the rootfs: same logic, but with **squashfs → ext4 conversion** on the
-   host because Firecracker wants an ext4 rootfs:
+We could pre-build ext4 images on our own bucket. We don't, because:
 
-   ```bash
-   curl -fsSL --output /tmp/{image_name}.squashfs.part '{rootfs_url}'
-   echo '{rootfs_sha256}  /tmp/{image_name}.squashfs.part' | sha256sum -c -
-   mv /tmp/{image_name}.squashfs.part /tmp/{image_name}.squashfs
+- We avoid building and storing our own artifacts for the building block.
+- The Firecracker CI squashfs is public and stable for the supported
+  releases.
+- Conversion on the server is a few seconds, once per server per image.
 
-   rm -rf /tmp/{image_name}-squashfs-root
-   unsquashfs -d /tmp/{image_name}-squashfs-root /tmp/{image_name}.squashfs
-
-   # Drop the in-guest stable assets:
-   #   - the one-shot network unit (same content for every VM ever made from
-   #     this image)
-   #   - the placeholder /etc/atlas-vm.env (overwritten per-VM at provision)
-   install -m 0644 /dev/stdin /tmp/{image_name}-squashfs-root/etc/systemd/system/atlas-net.service <<'EOF'
-   [Unit]
-   Description=Atlas VM Static IPv6
-   After=network-pre.target
-   Before=network.target
-   [Service]
-   Type=oneshot
-   EnvironmentFile=/etc/atlas-vm.env
-   ExecStart=/usr/sbin/ip -6 addr add ${VM_IPV6}/128 dev eth0
-   ExecStart=/usr/sbin/ip link set eth0 up
-   ExecStart=/usr/sbin/ip -6 route add default via fe80::1 dev eth0
-   ExecStart=/bin/sh -c 'echo "nameserver 2606:4700:4700::1111" > /etc/resolv.conf'
-   RemainAfterExit=yes
-   [Install]
-   WantedBy=multi-user.target
-   EOF
-   ln -sf /etc/systemd/system/atlas-net.service \
-          /tmp/{image_name}-squashfs-root/etc/systemd/system/multi-user.target.wants/atlas-net.service
-   touch /tmp/{image_name}-squashfs-root/etc/atlas-vm.env
-
-   # Build the ext4
-   sudo chown -R root:root /tmp/{image_name}-squashfs-root
-   truncate -s {default_disk_gb}G /var/lib/atlas/images/{image_name}/{rootfs_filename}
-   mkfs.ext4 -d /tmp/{image_name}-squashfs-root -F /var/lib/atlas/images/{image_name}/{rootfs_filename}
-
-   rm -rf /tmp/{image_name}-squashfs-root /tmp/{image_name}.squashfs
-   ```
-
-4. Write a small marker file:
-   ```bash
-   printf '%s  %s\n%s  %s\n' \
-       '{kernel_sha256}' '{kernel_filename}' \
-       '{rootfs_sha256}'  '{rootfs_filename}' \
-       > /var/lib/atlas/images/{image_name}/sha256sums
-   ```
+When we add custom images (extra packages, custom users), we'll revisit.
 
 ## Per-VM rootfs creation
 
-When a VM is provisioned (see [04-vm-lifecycle.md](./04-vm-lifecycle.md)):
+When `provision-vm.sh` runs, it:
 
-1. `cp /var/lib/atlas/images/{image}/{rootfs_filename} \
-       /var/lib/atlas/vms/{vm_name}/rootfs.ext4`
-2. `truncate -s {disk_gb}G /var/lib/atlas/vms/{vm_name}/rootfs.ext4`
-3. `e2fsck -fy ... ; resize2fs ...` to grow the FS.
-4. `mount -o loop` to:
-   - drop the user's SSH key into `/root/.ssh/authorized_keys`,
-   - write `/etc/atlas-vm.env` with `VM_IPV6={ipv6_address}`,
+1. Copies the pristine ext4 into the VM directory.
+2. `truncate -s <disk_gigabytes>G` to grow the file.
+3. `e2fsck -fy` + `resize2fs` to extend the filesystem.
+4. `mount -o loop` to write `/root/.ssh/authorized_keys` and
+   `/etc/atlas-network.env`. The `atlas-network.service` is already in the
+   pristine image and already wanted by `multi-user.target`, so we don't
+   need to touch systemd inside the rootfs.
 5. `umount`.
 
-The atlas-net.service unit is already baked into the image during sync, so
-all we touch per-VM is the env file and the SSH key.
-
-## Why plain copy and not overlayfs
-
-For this iteration:
-
-- One copy of the rootfs per VM is ~600MB–4GB. On `s-2vcpu-4gb-intel` (80 GB
-  SSD) that's room for ~20 VMs of 4 GB each. Plenty for the building block.
-- Overlayfs adds complexity: a writable upper layer per VM, careful unmount
-  on stop, more failure modes during host reboot.
-- We can reach for it later when density matters.
-
-## Why convert squashfs → ext4 host-side instead of shipping ext4
-
-We could host pre-built ext4 images on our own bucket. We deliberately don't,
-because:
-
-- It adds a build pipeline and a storage cost for the building block.
-- The Firecracker CI squashfs is already public and stable for the supported
-  releases.
-- Conversion on the host is ~10 seconds per node per image — a one-time cost.
-
-When we add custom images (with extra packages), we'll revisit this. For
-this iteration, the squashfs URL is authoritative.
+This means a freshly booted VM comes up with the right IPv6, the right SSH
+key, and a working internet route within ~2 seconds of `systemctl
+start`.
 
 ## Verification
 
-Every download is checksummed. A mismatched checksum is a hard failure of
-the sync command — the `.part` file is left in place for inspection and the
-`Metal Command` records the mismatch in stderr.
+Every download is checksummed against the value on the image record.
+Mismatch is a hard failure of the Task. The `.part` temp file is left in
+place for inspection.
+
+## Bumping an image
+
+To roll to a new Ubuntu CI release:
+
+1. Update `kernel_url`, `kernel_sha256`, `rootfs_url`, `rootfs_sha256` on
+   the `Virtual Machine Image`.
+2. Click **Sync to All Servers**. Each server's Task downloads and rebuilds
+   the ext4. The existing ext4 stays put because the script checks for
+   filename presence — so old VMs continue to work from the old image bytes
+   on the server.
+
+This is intentional: bumping an image does not affect existing VMs. To put
+a new VM on the new image, archive and re-provision (changing `image` is
+not allowed; see [05-virtual-machine-lifecycle.md](./05-virtual-machine-lifecycle.md)).
+
+If you want the new bits everywhere on a fresh sync, change the
+`rootfs_filename` to a new value (e.g. include the release date). Then the
+old file remains for old VMs, the new file gets built, and new VMs use it.

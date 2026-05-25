@@ -1,96 +1,126 @@
-# Roadmap — what we're deliberately deferring
+# Roadmap and deferred decisions
 
-This iteration is a building block. The list below is everything we've
-*chosen* not to do, paired with the cheapest path to add it later. If a
-deferred item would force a schema or interface change we can't backfill,
-it's flagged **breaking**.
+This iteration is a building block. Two flavors of deferral live here:
 
-## Next iteration (probably immediate)
+1. Things we know we'll do later, with a cheap path to add them.
+2. Architectural questions we punted on, and how we plan to revisit them.
 
-- **Unprivileged user on the metal node.** Move from `root` to an `atlas`
-  user with NOPASSWD sudo on a tight allowlist (`firecracker`, `ip`, `nft`,
-  `systemctl`, `mkfs.ext4`, `mount`/`umount`, `truncate`, `cp`, `install`).
-  Then drop sudo for the firecracker binary in favor of the **jailer**.
-  Not breaking — the `Metal Provider.ssh_private_key` and the SSH wrapper
-  are the only touch points.
+## Punted decisions
 
-- **A small CLI** (`atlas vm ls`, `atlas vm start`, etc.) that talks to the
-  same Frappe REST API the buttons use. Pure additive.
+### SSH execution model — "one Task = one shell script"
 
-- **Host key pinning.** Capture the host key on first SSH after droplet
-  creation, store it on `Metal Node`, refuse `AutoAddPolicy` after that.
-  Adds one field on `Metal Node`. Not breaking.
+We picked this because it's the smallest model that lets a VM provision in
+one network round-trip and produces a single audit row per operation. It
+trades step-level error attribution for speed and simplicity.
 
-- **Bare metal provider.** A second `provider_type` that creates rows by
-  hand (IP + SSH key + region as form input) instead of calling DO. The
-  provider abstraction in [01-architecture.md](./01-architecture.md) was
-  designed for this. Not breaking.
+The shape we'd eventually want is something like
+[`pyinfra`](https://pyinfra.com): declare desired state in Python, get
+batched per-host shell commands and structured outputs. We didn't take the
+dependency because:
 
-## After the building block is solid
+- pyinfra is a substantial framework (operations, facts, connectors,
+  gevent). It assumes a deploy-from-CLI workflow we don't have.
+- We can grow a 200-line subset ourselves when the pain shows up.
 
-- **Custom images.** A `VM Image Build` DocType that builds an ext4 from a
-  Dockerfile or debootstrap recipe, pushes to a registry/bucket, and points
-  `VM Image` at it. Likely additive — the `VM Image` DocType already
-  treats kernel/rootfs URLs as opaque.
+When to revisit: when we have more than ~3 scripts that share large blocks
+of "ensure file exists / ensure package installed" logic. At that point,
+extract a tiny operations layer in Python, keep each operation idempotent,
+keep the Task-per-script contract.
 
-- **Overlayfs-backed rootfs.** Each VM gets `lower=image.ext4` plus a thin
-  upper. Reduces per-VM disk by ~10x. Requires changing the `provision`
-  flow but not the DocType schema.
+### Bootstrap mechanism — shell script today
 
-- **Snapshots.** Firecracker supports diff snapshots and resumes. Will need
-  a `VM Snapshot` DocType and changes to the lifecycle state machine
-  (a `Suspended` state). **Breaking** for code paths that assume the
-  3-state Pending/Running/Stopped model — keep that in mind when writing
-  status checks now (don't `if status != "Running": treat as Stopped`,
-  always handle each value).
+Same shape as above. A Bash script is the smallest thing that works. When
+servers grow distinct roles (compute, edge, builder) or when we want to
+*declare* their state and reconcile it, we will build a small declarative
+layer ourselves rather than take pyinfra.
 
-- **IPv4 egress for guests.** A NAT64/DNS64 deployment on each metal node,
-  or a separate egress gateway VM. Out of scope here, but worth flagging:
-  guests in this iteration can't `apt update` from IPv4-only mirrors.
-  Mitigation: the Ubuntu 24.04 archives are reachable over IPv6 from most
-  DO regions.
+When to revisit: when there are two genuinely different bootstrap paths,
+or when an operator wants to make a small surgical change to a running
+server without re-running the whole script.
 
-- **Health checks and reconciliation.** A scheduled job that SSH's into
-  every active node, runs `systemctl is-active atlas-vm@<name>` for each
-  VM, and updates `Virtual Machine.status` to match. Pure additive.
+### Address reuse on archive
 
-- **Metrics.** `firecracker --metrics-path` writes a JSON file per VM
-  every Nth second. Ship those to wherever metrics live. Additive.
+Today, archived VMs hold their IPv6 address forever; new VMs always get a
+fresh address from the /124. With a /124 (15 usable addresses) this caps
+the lifetime number of VMs per server at 15.
 
-- **Console access.** A signed URL that proxies to the guest's serial
-  console (Firecracker exposes it over the API socket). Needs a small web
-  service. Additive.
+This is acceptable for the building block but obviously not for production.
+The next iteration moves to either:
 
-## After Atlas has real consumers
+- Larger usable subnets per server (talk to DO; or move off DO to a
+  provider that routes the whole /64 to the droplet), or
+- Reusing addresses with a quarantine window (Task audit gets a "this
+  address was used by VM X 2026-05-01..2026-05-04" lookup).
 
-- **Quotas and ownership.** The "Site/Bench/IAM/Billing" layer above Atlas
-  adds a `team` field on `Virtual Machine` and `Metal Node`. Atlas itself
-  stays unaware. Additive.
+### Host-key trust
 
-- **Placement / scheduling.** Today the operator picks the node. Eventually
-  some upper layer will pick for them based on free capacity. Atlas gains a
-  `Metal Node.capacity_*` set of computed fields. Additive.
+We use `StrictHostKeyChecking=accept-new`. First connection is
+trust-on-first-use. A compromised DigitalOcean control plane could swap a
+droplet underneath us between bootstrap and first SSH. Fix is to capture
+the host key during `Server.provision()` (right after droplet create, via
+the DO API's serial console — or by reading the public key from the
+droplet's `/etc/ssh/ssh_host_ed25519_key.pub` over the *first* SSH and
+pinning it). Both add a field to `Server` and a one-time write. Not
+breaking.
 
-- **High availability.** Multi-AZ replicas, snapshot-and-restore failover.
-  Significant work; will need its own spec.
+## Concrete next steps after this iteration
 
-## What we will *not* do regardless
+- **Unprivileged user on the server**. Move from `root` to an `atlas` user
+  with `sudo` on a narrow allowlist. Then drop `sudo` for the Firecracker
+  binary in favor of the **jailer**. Touches `Server Provider` (the user
+  the SSH key is for) and the wrapper that prepends `sudo`. Not breaking.
 
-- Build our own hypervisor. Firecracker is the building block.
-- Build a portal. Desk plus the eventual CLI cover every need we have.
-- Adopt Kubernetes. The point of this stack is to avoid that level of
-  complexity for our use case.
-- Multi-tenant secrets in this app. Site-level secrets belong in the
-  Site/Bench layer.
+- **Host-key pinning**. See above.
 
-## Versioning the spec
+- **CLI**. A small `atlas` CLI that calls Frappe's REST API. The DocType
+  methods we expose for buttons become the CLI's commands. Pure additive.
 
-When something in this folder is meaningfully wrong (not just incomplete),
-update the file in place and add a one-line note at the bottom of
-`09-roadmap.md` under a "Changes" heading with the date and a sentence
-about what flipped. The git log is the canonical history; this list is the
-human-readable summary.
+- **Bare-metal provider**. A second `provider_type` that doesn't call DO —
+  the operator enters IP, SSH key, region. Provisioning becomes "type in
+  what already exists". Additive.
 
-### Changes
+- **Multi-arch**. Drop the `ARCHITECTURE` hard-coding; allow `aarch64`. The
+  Firecracker CI publishes aarch64 artifacts. Additive on
+  `Server` and the image record.
 
-- _none yet — this is v0._
+## Things on the longer-term list
+
+- **Custom images** (`Virtual Machine Image Build`): build an ext4 from a
+  Dockerfile or debootstrap recipe, push to a bucket, point the image
+  record at it. Additive.
+
+- **Overlayfs-backed rootfs**: shrink per-VM disk by ~10×. Internal to
+  `provision-vm.sh` and `delete-vm.sh`. Additive.
+
+- **Snapshots**: Firecracker supports them. Adds a state and a DocType.
+  *Breaking* for code that pattern-matches the current state machine —
+  treat the status field as an open set when you write checks today.
+
+- **Health checks**: a scheduled job that runs `systemctl is-active …` per
+  VM and reconciles `Virtual Machine.status`. Additive.
+
+- **Metrics**: `firecracker --metrics-path` per VM, shipped to whatever
+  metrics store the next layer cares about. Additive.
+
+- **Console access**: signed URL to the serial console via the API socket.
+  Needs a small web service. Additive.
+
+- **Quotas / ownership / scheduling**: belongs in the layer above Atlas.
+  Atlas gains a `team` field on resources but stays unaware of policy.
+
+## Things we will not do, regardless
+
+- Build our own hypervisor.
+- Build a portal. Desk and a future CLI cover what we need.
+- Adopt Kubernetes.
+- Multi-tenant secrets management in this app.
+
+## Changes
+
+- `v0.1` — initial spec.
+- `v0.2` — renamed `Metal Node`→`Server`, `Metal Command`→`Task`,
+  `VM Image`→`Virtual Machine Image`. Switched from paramiko to system
+  `ssh`. One Task = one shell script. Bumped Firecracker to v1.15.1.
+  Documented the DigitalOcean /124 routing constraint. VMs are now UUIDs
+  and keep their name on archive. Shell scripts live in `atlas/scripts/`,
+  not embedded in markdown.
