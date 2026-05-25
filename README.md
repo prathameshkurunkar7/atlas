@@ -1,8 +1,23 @@
-### Atlas
+# Atlas
 
-Frappe Hosting Platform
+Atlas manages Firecracker virtual machines on servers. It is the lowest layer
+of a Frappe hosting platform; sites, benches, IAM, and billing live in
+separate apps on top.
 
-### Installation
+- Spec: [spec/](./spec/README.md)
+- Plan and history of how it got built: [plan/](./plan/00-overview.md)
+- Spec/implementation drift: [plan/drift.md](./plan/drift.md)
+- Shell scripts that run on the server: [scripts/](./scripts/README.md)
+
+## What's here
+
+- `atlas/` — the Frappe app source.
+- `scripts/` — shell scripts uploaded over SSH and executed on the server.
+- `spec/` — operator-facing specification.
+- `plan/` — phased implementation plan (with `drift.md`).
+- `llm/` — Claude-facing reference material.
+
+## Installation
 
 You can install this app using the [bench](https://github.com/frappe/bench) CLI:
 
@@ -12,7 +27,28 @@ bench get-app $URL_OF_THIS_REPO --branch main
 bench install-app atlas
 ```
 
-### Contributing
+## Local verification
+
+After `bench install-app atlas` and creating an `atlas.local` site:
+
+1. Put a DigitalOcean API token + SSH key fingerprint in the site config:
+
+       bench --site atlas.local set-config -p atlas_do_token <DO_TOKEN>
+       bench --site atlas.local set-config -p atlas_ssh_key_id <FINGERPRINT>
+       bench --site atlas.local set-config -p atlas_ssh_private_key "$(cat ~/.ssh/atlas-test)"
+
+2. Run the shared-droplet end-to-end suite:
+
+       bench --site atlas.local execute atlas.tests.e2e.run_all
+
+The run takes ~9 minutes and creates exactly one billable droplet (reused
+across phases 4–7, deleted when the run ends). Phases 2 and 3 own their own
+dedicated-droplet flows and are invoked directly:
+
+       bench --site atlas.local execute atlas.tests.e2e.phase_2.run
+       bench --site atlas.local execute atlas.tests.e2e.phase_3.run
+
+## Contributing
 
 This app uses `pre-commit` for code formatting and linting. Please [install pre-commit](https://pre-commit.com/#installation) and enable it for this repository:
 
@@ -27,14 +63,14 @@ Pre-commit is configured to use the following tools for checking and formatting 
 - eslint
 - prettier
 - pyupgrade
-### CI
+
+## CI
 
 This app can use GitHub Actions for CI. The following workflows are configured:
 
 - CI: Installs this app and runs unit tests on every push to `develop` branch.
 - Linters: Runs [Frappe Semgrep Rules](https://github.com/frappe/semgrep-rules) and [pip-audit](https://pypi.org/project/pip-audit/) on every pull request.
 
-
-### License
+## License
 
 agpl-3.0
