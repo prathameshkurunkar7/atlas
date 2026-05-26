@@ -30,6 +30,9 @@ operator at the end of phase 8.
 - Resolve: keep both. Document the wrapper in `04-tasks.md`.
 - **Resolved (phase 8): spec updated.** `04-tasks.md` "How it runs"
   documents both `run_task(connection, ...)` and `run_task_on_server(...)`.
+- **Updated (T3.3, 2026-05-26): merged into one entry point with two modes.**
+  `run_task_on_server` deleted. `run_task(*, script, variables, ...)` now
+  requires exactly one of `server=` or `connection=`. Spec updated to match.
 
 ### 1.3 No reconciler for orphaned `Running` Task rows
 
@@ -167,6 +170,16 @@ No drift. Spec doesn't describe the DO client at this level.
   `::1`. Test pins behavior.
 - Resolve: nothing.
 - **Resolved (phase 8): no change.**
+
+### 5.4a Image-presence check moved from Python helper Task into provision-vm.sh
+
+- T3.4 (2026-05-26): `_assert_image_present` and `scripts/probe-image-present.sh`
+  deleted. `provision-vm.sh` step 0 now does the `[ -f rootfs ]` check
+  inline and exits non-zero with the same "not present; run Sync to Server
+  first" message. Net effect: one Task per provision instead of two, and
+  the script remains the source of truth for "is the image here?". E2E
+  phase 5's negative path still passes because the error wording matches.
+- Resolve: spec and code now agree (see 5.4 update above).
 
 ### 5.4 Provision requires image already on server (does not auto-sync)
 
@@ -373,12 +386,14 @@ No new drift introduced. Phase 8 is permissions + docs.
 
 ## E2E reliability plan
 
-Drift introduced while implementing [e2e-reliability.md](./e2e-reliability.md).
+Drift introduced while building the e2e reliability fixes. (The original
+working document `plan/e2e-reliability.md` was deleted in the iteration-1
+close-out; entries below are the authoritative record.)
 
 ### E1. Phase 4 image fixture moved to `_shared.py` and refreshes stale rows
 
-- Plan: [`e2e-reliability.md`](./e2e-reliability.md) fix 3 specifies the
-  v1.12 URLs + checksums and the `_ensure_image` refresh.
+- Plan: the e2e-reliability working doc (deleted) specified v1.12 URLs +
+  checksums and an `_ensure_image` refresh.
 - Implementation: `DEFAULT_IMAGE` lives in
   [`atlas/tests/e2e/_shared.py`](../atlas/tests/e2e/_shared.py); phases
   4/5/6 import it. `_ensure_image` calls `doc.update(DEFAULT_IMAGE)` on
@@ -440,13 +455,12 @@ Drift introduced while implementing [e2e-reliability.md](./e2e-reliability.md).
   path) with (b) Server rows named `atlas-e2e-*` with a
   `provider_resource_id`. Same operator UX: doctl commands printed, never
   auto-deleted.
-- Resolve: amend [`e2e-reliability.md`](./e2e-reliability.md) fix 1
-  bullet 5 to describe the union, OR change `provision_server` to take a
-  `tags=[...]` kwarg and have `ensure_bootstrapped_server` pass
-  `atlas-e2e`. Latter is cleaner but out of this iteration's scope.
-- **Resolved (phase 8): punted to next iteration.** Code is right;
-  `e2e-reliability.md` is historical (the union is documented here, in
-  drift.md, which is the contract for this iteration).
+- Resolve: change `provision_server` to take a `tags=[...]` kwarg and have
+  `ensure_bootstrapped_server` pass `atlas-e2e`. Cleaner than the union,
+  but out of this iteration's scope.
+- **Resolved (phase 8): punted to next iteration.** Code is right; the
+  union is documented here, in drift.md, which is the contract for this
+  iteration.
 
 ### E6. Fix 6's per-script poll table only applies to async sync-image
 
@@ -459,10 +473,11 @@ Drift introduced while implementing [e2e-reliability.md](./e2e-reliability.md).
   `Image.sync_to_server`, which enqueues a background job). Consolidated
   `wait_for_task` covers that. Provision-vm subprocess timeout tightened
   from 120s → 30s in [`virtual_machine.py`](../atlas/atlas/doctype/virtual_machine/virtual_machine.py).
-- Resolve: amend the plan: drop the per-script poll table for synchronous
-  scripts; keep only the sync-image entry.
+- Resolve: drop the per-script poll table for synchronous scripts; keep
+  only the sync-image entry. (Lives only in drift.md now.)
 - **Resolved (phase 8): drift.md is the authoritative correction.** The
-  `e2e-reliability.md` plan paragraph is historical and not re-edited.
+  original plan paragraph was historical; the working document has been
+  deleted.
 
 ### E7. `bench execute … ensure_bootstrapped_server` fails to JSON-serialize the return
 
@@ -499,3 +514,54 @@ or "no change because spec and code already agree"). Items punted to the
 next iteration: E5 (`teardown_all` tag refactor), and the roadmap items
 ("Stuck-task reaper" 1.3/7.6, "Server lock doctype" 4.2). No drift entry
 remains unresolved.
+
+## Tier 3 code-review cleanup (2026-05-26)
+
+Implemented the Tier 3 items from
+[`code-review-checklist.md`](./code-review-checklist.md). Each item is a
+contained architectural change.
+
+- **T3.1** — `Task.variables_dict` property/setter handles JSON round-trip;
+  call sites in `ssh.py` and `virtual_machine_image.py` no longer reach for
+  `json.dumps`/`loads`. `Task.validate()` invokes the property to reuse the
+  shape check.
+- **T3.2** — `Connection` is now a frozen dataclass (host, ssh_private_key,
+  user="root"). All `ssh.py` helpers and e2e callers updated. No more
+  `connection.get("user", "root")` defensive look-ups.
+- **T3.3** — `run_task` is the single entry point. `run_task_on_server` is
+  gone. Signature is keyword-only with `server=` or `connection=` (exactly
+  one). Spec `04-tasks.md` "How it runs" updated; drift entry 1.2 carries
+  the addendum.
+- **T3.4** — `provision-vm.sh` now does the image-present check in step 0.
+  `scripts/probe-image-present.sh` and `_assert_image_present` deleted.
+  One Task per provision; spec `05-virtual-machine-lifecycle.md` rewritten
+  accordingly (see drift 5.4a).
+- **T3.5** — `atlas/atlas/_ssh/{transport,runner}.py` carry the split.
+  `ssh.py` is now a 38-line re-export shim. `_resolve_script` moved into
+  `scripts_catalog.resolve` (without the `allowed_scripts` whitelist, which
+  would break e2e probe scripts — that gating is Tier 4 §3.5).
+- **T3.6** — `atlas/tests/e2e/_{config,droplets,tasks,image}.py` carry the
+  split. `_shared.py` is a re-export shim so operator-facing
+  `bench execute atlas.tests.e2e._shared.teardown_all` keeps working.
+- **T3.7** — Server form now uses Frappe's built-in Connections dashboard
+  (configured in `server_dashboard.py`) instead of bespoke HTML rendering.
+  `get_form_extras`, the HTML fields, and the JS render functions deleted.
+  Spec `02-doctypes.md` wireframe updated.
+
+## Tier 2 code-review cleanup (2026-05-26)
+
+Implemented the Tier 2 items from
+[`code-review-checklist.md`](./code-review-checklist.md). Mechanical
+deduplication; no contract changes. One intentional deviation:
+
+### T2.12 phase() context manager: phase_3 not migrated
+
+- Checklist: T2.12 says migrate `phase_3.run` through `phase_7.run`.
+- Implementation: only phases 4–7 use `phase()`. Phase 3 provisions a fresh
+  throwaway droplet via `provision_server` — that's the path it exists to
+  test. The `phase()` context manager starts with
+  `ensure_bootstrapped_server`, which is a *reuse-or-fall-back-to-provision*
+  helper and would either short-circuit to an existing Active server or
+  bypass the very `provision_server` path phase 3 verifies. Folding phase 3
+  into `phase()` would dilute its contract.
+- Resolve: no change. Plan paragraph in checklist is historical.

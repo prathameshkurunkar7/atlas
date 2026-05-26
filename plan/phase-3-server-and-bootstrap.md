@@ -29,6 +29,11 @@ and bootstraps it. The bootstrap is one enqueued Task running
 
 ### Scripts (existing files edited)
 
+Per Taste rule "every shell script in `scripts/` must be idempotent" (see
+[`../llm/Taste.md`](../llm/Taste.md)): re-running `bootstrap-server.sh` on an
+already-bootstrapped droplet must be a no-op (re-`mkdir -p`, re-`systemctl
+enable`, etc.). Recovery is "click Bootstrap again," never a repair path.
+
 - [`../scripts/bootstrap-server.sh`](../scripts/bootstrap-server.sh) — prefix
   privileged commands with `sudo` per the convention in
   [`00-overview.md`](./00-overview.md#shell-scripts-call-sudo).
@@ -128,6 +133,12 @@ Schema per [`../spec/02-doctypes.md#server`](../spec/02-doctypes.md#server).
 - Buttons: **Bootstrap**, **Run Task**, **Reboot**. **Run Task** is a stub in
   this phase that just opens a "TODO phase 7" dialog; **Reboot** is also
   stubbed (`systemctl reboot` is dangerous and tested in phase 7's polish).
+
+Taste cite: "Scripts are the source of truth for server-side logic." The
+helper files passed to `upload_files` live in `scripts/` and are the source
+of truth; Python only stages them onto the host and invokes them. Server-side
+state machines belong in shell, not in the bootstrap controller. See
+[`../llm/Taste.md`](../llm/Taste.md).
 
 ### `Server.bootstrap()` (controller method, whitelisted)
 

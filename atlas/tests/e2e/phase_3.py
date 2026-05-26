@@ -6,15 +6,11 @@ import traceback
 import frappe
 
 from atlas.atlas.server_provider import provision_server
-from atlas.atlas.ssh import run_task_on_server
+from atlas.atlas.ssh import run_task
 from atlas.tests.e2e._shared import (
 	cleanup_droplet,
+	ensure_e2e_provider,
 	get_client,
-	get_image,
-	get_region,
-	get_size,
-	get_ssh_key_id,
-	get_ssh_private_key,
 	sweep_old_droplets,
 )
 
@@ -24,7 +20,7 @@ def run() -> None:
 	client = get_client()
 	sweep_old_droplets(client)
 
-	provider = _ensure_provider()
+	provider = ensure_e2e_provider()
 	server_name = f"atlas-e2e-phase3-{int(time.time())}"
 	server_doc = None
 
@@ -57,24 +53,6 @@ def run() -> None:
 	print(f"phase-3: OK in {elapsed:.0f}s")
 
 
-def _ensure_provider() -> "frappe.model.document.Document":
-	name = "atlas-e2e-provider"
-	if frappe.db.exists("Server Provider", name):
-		return frappe.get_doc("Server Provider", name)
-	return frappe.get_doc({
-		"doctype": "Server Provider",
-		"provider_name": name,
-		"provider_type": "DigitalOcean",
-		"api_token": frappe.conf.get("atlas_do_token"),
-		"ssh_key_id": get_ssh_key_id(),
-		"ssh_private_key": get_ssh_private_key(),
-		"default_region": get_region(),
-		"default_size": get_size(),
-		"default_image": get_image(),
-		"is_active": 1,
-	}).insert(ignore_permissions=True)
-
-
 def _wait_for_status(server_name: str, target: set[str], timeout: int) -> "frappe.model.document.Document":
 	deadline = time.monotonic() + timeout
 	while time.monotonic() < deadline:
@@ -87,7 +65,7 @@ def _wait_for_status(server_name: str, target: set[str], timeout: int) -> "frapp
 
 
 def _assert_remote_layout(server_name: str) -> None:
-	task = run_task_on_server(
+	task = run_task(
 		server=server_name,
 		script="phase3-probe.sh",
 		variables={},

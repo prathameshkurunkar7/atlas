@@ -27,6 +27,11 @@ Start/Stop/Delete come in phase 6.
 
 ### Scripts (existing files edited)
 
+Per Taste rule "every shell script in `scripts/` must be idempotent" (see
+[`../llm/Taste.md`](../llm/Taste.md)): re-running `provision-vm.sh` for the
+same VM name must converge to the same on-disk layout. The operator clicks
+Provision again on failure; there is no repair script.
+
 - [`../scripts/provision-vm.sh`](../scripts/provision-vm.sh) — `sudo` prefix.
 
 ### Module additions

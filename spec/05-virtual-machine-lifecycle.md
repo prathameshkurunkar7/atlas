@@ -65,24 +65,21 @@ Steps in Python (one DocType method, `Virtual Machine.provision`):
      Linux `IFNAMSIZ` is 16 *bytes* including the null terminator, so the
      usable interface-name length is 15: `atlas-` (6) + 9 = 15 exactly.
 
-2. **Verify the image is on the server**. If not, **fail fast** with a clear
-   error that points the operator at the **Sync to Server** action on the
-   Image record. Provision does not auto-sync — image sync is a
-   multi-minute operation and we want it deliberate, predictable, and
-   visible as its own Task. This is also why `provision-vm.sh` is fast and
-   synchronous.
+2. **Run the provisioning task**:
+   `run_task(server=name, script="provision-vm.sh", variables=…,
+   virtual_machine=name)`. The script's step 0 verifies the image is on the
+   server; if not, it exits non-zero with a clear error pointing the operator
+   at the **Sync to Server** action. Provision does not auto-sync — image
+   sync is a multi-minute operation and we want it deliberate, predictable,
+   and visible as its own Task. The remaining steps (rootfs copy, resize,
+   SSH key injection, config write, systemd enable+start) happen inside the
+   same SSH session. See [`atlas/scripts/provision-vm.sh`](../scripts/provision-vm.sh).
 
-3. **Run the provisioning task**:
-   `run_task(server, "provision-vm.sh", variables, virtual_machine=name)`.
-   The script does everything else inside one SSH session (rootfs copy,
-   resize, SSH key injection, config write, systemd enable+start). See
-   [`atlas/scripts/provision-vm.sh`](../scripts/provision-vm.sh).
-
-4. **Update status**: on Task success, `status = Running`,
+3. **Update status**: on Task success, `status = Running`,
    `last_started = now()`.
 
-This is one Task per VM creation. (The image sync, if needed, is a
-separate Task triggered explicitly by the operator before provisioning.)
+One Task per VM creation. (The image sync, if needed, is a separate Task
+triggered explicitly by the operator before provisioning.)
 
 ## Start / Stop / Restart
 

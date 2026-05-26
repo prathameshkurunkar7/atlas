@@ -32,6 +32,14 @@ set -euo pipefail
 image_directory="/var/lib/atlas/images/${IMAGE_NAME}"
 vm_directory="/var/lib/atlas/virtual-machines/${VIRTUAL_MACHINE_NAME}"
 
+# 0. Verify image present. Fail loud with an actionable message so the operator
+#    knows to click Sync to Server before retrying. (Image sync is multi-minute
+#    and is intentionally not auto-triggered from provision.)
+if [ ! -f "${image_directory}/${ROOTFS_FILENAME}" ]; then
+    echo "image '${IMAGE_NAME}' not present on server (missing ${image_directory}/${ROOTFS_FILENAME}); run Sync to Server first" >&2
+    exit 1
+fi
+
 sudo install -d -m 0700 "$vm_directory"
 sudo install -d -m 0700 "${vm_directory}/log"
 

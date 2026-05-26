@@ -4,6 +4,11 @@ Atlas is a Frappe app for managing Firecracker virtual machines on servers.
 It is the lowest layer of a Frappe hosting platform. Sites, benches, IAM, and
 billing live in separate apps on top.
 
+The spec describes the system as it is. When the spec and code disagree, the
+code is the source of truth and the spec gets updated to match, unless the
+disagreement reveals a code defect. The `plan/drift.md` running log of these
+discoveries is preserved as project history.
+
 ## Goals
 
 - Track servers (the hosts that run Firecracker).

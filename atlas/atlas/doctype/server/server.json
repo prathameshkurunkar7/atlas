@@ -22,10 +22,6 @@
   "architecture",
   "firecracker_version",
   "kernel_version",
-  "section_break_virtual_machines",
-  "virtual_machines_html",
-  "section_break_recent_tasks",
-  "recent_tasks_html",
   "section_break_notes",
   "notes"
  ],
@@ -122,26 +118,6 @@
    "fieldtype": "Data",
    "label": "Kernel Version",
    "read_only": 1
-  },
-  {
-   "fieldname": "section_break_virtual_machines",
-   "fieldtype": "Section Break",
-   "label": "Virtual Machines on this Server"
-  },
-  {
-   "fieldname": "virtual_machines_html",
-   "fieldtype": "HTML",
-   "label": "Virtual Machines"
-  },
-  {
-   "fieldname": "section_break_recent_tasks",
-   "fieldtype": "Section Break",
-   "label": "Recent Tasks"
-  },
-  {
-   "fieldname": "recent_tasks_html",
-   "fieldtype": "HTML",
-   "label": "Recent Tasks"
   },
   {
    "fieldname": "section_break_notes",

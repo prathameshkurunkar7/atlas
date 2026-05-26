@@ -7,19 +7,27 @@ IMMUTABLE_AFTER_INSERT = ("server", "virtual_machine", "script", "variables", "t
 
 
 class Task(Document):
-	def validate(self) -> None:
-		self._validate_variables_json()
-		self._validate_immutability()
-
-	def _validate_variables_json(self) -> None:
-		if not self.variables:
-			frappe.throw("variables is required")
+	@property
+	def variables_dict(self) -> dict:
 		try:
-			parsed = json.loads(self.variables)
+			parsed = json.loads(self.variables or "{}")
 		except json.JSONDecodeError as exception:
 			frappe.throw(f"variables must be valid JSON: {exception}")
 		if not isinstance(parsed, dict):
 			frappe.throw("variables must be a JSON object")
+		return parsed
+
+	@variables_dict.setter
+	def variables_dict(self, value: dict) -> None:
+		if not isinstance(value, dict):
+			frappe.throw("Task.variables_dict must be a dict")
+		self.variables = json.dumps(value, sort_keys=True)
+
+	def validate(self) -> None:
+		if not self.variables:
+			frappe.throw("variables is required")
+		self.variables_dict
+		self._validate_immutability()
 
 	def _validate_immutability(self) -> None:
 		if self.is_new():

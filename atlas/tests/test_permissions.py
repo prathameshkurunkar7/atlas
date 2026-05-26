@@ -8,27 +8,12 @@ new DocType or relaxes a perms block can't silently widen access.
 import frappe
 from frappe.tests import IntegrationTestCase
 
+from atlas.tests.fixtures import make_provider
+
 PROVIDER_NAME = "atlas-perm-test-provider"
 BASIC_USER_EMAIL = "atlas-perm-basic@example.com"
 SYSMGR_USER_EMAIL = "atlas-perm-sysmgr@example.com"
 PRIVATE_KEY_PLAINTEXT = "-----BEGIN OPENSSH PRIVATE KEY-----\nperm-test-secret\n"
-
-
-def _make_provider() -> "frappe.model.document.Document":
-	if frappe.db.exists("Server Provider", PROVIDER_NAME):
-		return frappe.get_doc("Server Provider", PROVIDER_NAME)
-	return frappe.get_doc({
-		"doctype": "Server Provider",
-		"provider_name": PROVIDER_NAME,
-		"provider_type": "DigitalOcean",
-		"api_token": "dop_v1_perm_test",
-		"ssh_key_id": "fp:perm-test",
-		"ssh_private_key": PRIVATE_KEY_PLAINTEXT,
-		"default_region": "blr1",
-		"default_size": "s-2vcpu-4gb-intel",
-		"default_image": "ubuntu-24-04-x64",
-		"is_active": 1,
-	}).insert(ignore_permissions=True)
 
 
 def _ensure_system_manager_user() -> str:
@@ -72,7 +57,12 @@ def _make_basic_user() -> str:
 
 class TestPermissions(IntegrationTestCase):
 	def setUp(self) -> None:
-		self.provider = _make_provider()
+		self.provider = make_provider(
+			PROVIDER_NAME,
+			api_token="dop_v1_perm_test",
+			ssh_key_id="fp:perm-test",
+			ssh_private_key=PRIVATE_KEY_PLAINTEXT,
+		)
 		self.basic_user = _make_basic_user()
 		self.addCleanup(frappe.set_user, "Administrator")
 

@@ -46,6 +46,10 @@ Every phase file follows the same shape:
 - `ruff` per [`../pyproject.toml`](../pyproject.toml). Tabs for indent.
 - Tests live next to the doctype they cover
   (`atlas/atlas/doctype/<name>/test_<name>.py`).
+- Test fixture builders (`make_server`, `make_image`, etc.) live in
+  `atlas/tests/fixtures.py`. Each builder takes a name and `**overrides`,
+  implements "create if not exists." Test files import from there; no
+  per-file `_make_provider` reimplementations.
 
 ### DocType layout
 

@@ -3,21 +3,33 @@
 import frappe
 
 
-def dump_for_server(server_name: str) -> None:
+def dump_recent_tasks(server_name: str | None = None, limit: int = 20) -> None:
+	"""Print the latest `limit` Task rows, optionally filtered by server.
+
+	With `server_name=None`, lists across all servers. Provides the truncated
+	stdout/stderr view that's useful from the operator console (e.g. via
+	`bench --site atlas.local execute atlas.tests.e2e._inspect.dump_recent_tasks`).
+	"""
+	filters: dict = {"server": server_name} if server_name else {}
 	tasks = frappe.get_all(
 		"Task",
-		filters={"server": server_name},
-		fields=["name", "status", "script"],
+		filters=filters,
+		fields=["name", "status", "script", "server"],
 		order_by="creation desc",
+		limit_page_length=limit,
 	)
-	print(f"tasks for {server_name}: {tasks}")
-	for record in tasks[:3]:
-		doc = frappe.get_doc("Task", record.name)
-		print(f"\n=== Task {doc.name} ({doc.script}) status={doc.status} ===")
-		print("STDOUT (last 2000):")
-		print((doc.stdout or "(none)")[-2000:])
-		print("\nSTDERR (last 1000):")
-		print((doc.stderr or "(none)")[-1000:])
+	print(tasks)
+	for record in tasks:
+		_print_task(record.name)
+
+
+def _print_task(name: str) -> None:
+	doc = frappe.get_doc("Task", name)
+	print(f"\n=== Task {doc.name} ({doc.script}) status={doc.status} server={doc.server} ===")
+	print("STDOUT (last 2000):")
+	print((doc.stdout or "(none)")[-2000:])
+	print("\nSTDERR (last 1000):")
+	print((doc.stderr or "(none)")[-1000:])
 
 
 def mark_task_failure(task_name: str, reason: str = "manually marked Failure (worker died)") -> None:
@@ -58,20 +70,3 @@ def rebootstrap(server_name: str) -> None:
 	server = frappe.get_doc("Server", server_name)
 	task = server.bootstrap()
 	print(f"bootstrap task: {task}")
-
-
-def dump_recent_tasks(limit: int = 5) -> None:
-	tasks = frappe.get_all(
-		"Task",
-		fields=["name", "status", "script", "server"],
-		order_by="creation desc",
-		limit_page_length=limit,
-	)
-	print(tasks)
-	for record in tasks:
-		doc = frappe.get_doc("Task", record.name)
-		print(f"\n=== Task {doc.name} ({doc.script}) status={doc.status} server={doc.server} ===")
-		print("STDOUT (last 2000):")
-		print((doc.stdout or "(none)")[-2000:])
-		print("\nSTDERR (last 1000):")
-		print((doc.stderr or "(none)")[-1000:])

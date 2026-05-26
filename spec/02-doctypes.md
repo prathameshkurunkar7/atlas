@@ -126,15 +126,11 @@ Buttons:
 |  [                                                           ]  |
 |                                                                 |
 |  [ Bootstrap ]  [ Run Task ]  [ Reboot ]                        |
-|                                                                 |
-|  ── Virtual Machines on this server ───────────────────────     |
-|  d4f7...   Running   2 vCPU  2048 MB  2a03:b0c0:abcd:1234::2    |
-|  19ae...   Stopped   1 vCPU  1024 MB  2a03:b0c0:abcd:1234::3    |
-|                                                                 |
-|  ── Recent Tasks ─────────────────────────────────────────      |
-|  2026-05-25 13:01  bootstrap-server.sh     Success    12.3s     |
-|  2026-05-25 13:11  provision-vm.sh         Success     3.4s     |
 +-----------------------------------------------------------------+
+
+Frappe's standard Connections dashboard renders below the form, linking
+Virtual Machines and Tasks via their `server` field (configured in
+`server_dashboard.py`). No bespoke HTML render.
 ```
 
 ---

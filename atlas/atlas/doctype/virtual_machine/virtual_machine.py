@@ -4,7 +4,7 @@ import frappe
 from frappe.model.document import Document
 
 from atlas.atlas.networking import allocate_ipv6, derive_mac, derive_tap
-from atlas.atlas.ssh import run_task_on_server
+from atlas.atlas.ssh import run_task
 
 IMMUTABLE_AFTER_INSERT = ("server", "image", "vcpus", "memory_megabytes", "disk_gigabytes")
 
@@ -17,13 +17,15 @@ class VirtualMachine(Document):
 		self.name = str(uuid.uuid4())
 
 	def before_validate(self) -> None:
-		if self.is_new() and not self.mac_address:
+		if not self.is_new():
+			return
+		if not self.mac_address:
 			self.mac_address = derive_mac(self.name)
-		if self.is_new() and not self.tap_device:
+		if not self.tap_device:
 			self.tap_device = derive_tap(self.name)
-		if self.is_new() and not self.ipv6_address:
+		if not self.ipv6_address:
 			self.ipv6_address = allocate_ipv6(self.server)
-		if self.is_new() and not self.status:
+		if not self.status:
 			self.status = "Pending"
 
 	def validate(self) -> None:
@@ -38,18 +40,17 @@ class VirtualMachine(Document):
 
 	@frappe.whitelist()
 	def provision(self) -> str:
-		"""Run provision-vm.sh. Image must already be on the server."""
+		"""Run provision-vm.sh. The script's step 0 fails loud if the image is
+		not on the server — provision is one Task per VM creation."""
 		if self.status not in ("Pending", "Failed"):
 			frappe.throw(f"Cannot provision from {self.status}")
-
-		self._assert_image_present()
 
 		self.status = "Provisioning"
 		self.save(ignore_permissions=True)
 		frappe.db.commit()
 
 		try:
-			task = run_task_on_server(
+			task = run_task(
 				server=self.server,
 				script="provision-vm.sh",
 				variables=self._provision_variables(),
@@ -73,7 +74,7 @@ class VirtualMachine(Document):
 	def start(self) -> str:
 		if self.status != "Stopped":
 			frappe.throw(f"Cannot start from {self.status}")
-		task = run_task_on_server(
+		task = run_task(
 			server=self.server,
 			script="start-vm.sh",
 			variables={"VIRTUAL_MACHINE_NAME": self.name},
@@ -90,7 +91,7 @@ class VirtualMachine(Document):
 	def stop(self) -> str:
 		if self.status != "Running":
 			frappe.throw(f"Cannot stop from {self.status}")
-		task = run_task_on_server(
+		task = run_task(
 			server=self.server,
 			script="stop-vm.sh",
 			variables={"VIRTUAL_MACHINE_NAME": self.name},
@@ -116,7 +117,7 @@ class VirtualMachine(Document):
 	def delete_vm(self) -> str:
 		if self.status == "Archived":
 			frappe.throw("VM is already archived")
-		task = run_task_on_server(
+		task = run_task(
 			server=self.server,
 			script="delete-vm.sh",
 			variables={"VIRTUAL_MACHINE_NAME": self.name},
@@ -144,19 +145,3 @@ class VirtualMachine(Document):
 			"SSH_PUBLIC_KEY": self.ssh_public_key,
 		}
 
-	def _assert_image_present(self) -> None:
-		image = frappe.get_doc("Virtual Machine Image", self.image)
-		probe = run_task_on_server(
-			server=self.server,
-			script="probe-image-present.sh",
-			variables={
-				"IMAGE_NAME": image.image_name,
-				"ROOTFS_FILENAME": image.rootfs_filename,
-			},
-			virtual_machine=self.name,
-			timeout_seconds=30,
-		)
-		# Probe exits 0 when present; non-zero is caught as Failure and raises
-		# via run_task_on_server before we get here. We only reach this line
-		# on Success, so no extra assertion needed.
-		_ = probe

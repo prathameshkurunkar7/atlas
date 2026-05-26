@@ -1,13 +1,14 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
 
 from atlas.atlas.doctype.virtual_machine.test_virtual_machine import (
-	_ensure_image,
-	_ensure_server,
+	_ensure_test_image,
+	_ensure_test_server,
 	_new_vm,
 )
+from atlas.tests._mocks import fake_task
 
 
 def _vm_with_status(status: str) -> "frappe.model.document.Document":
@@ -23,8 +24,8 @@ def _vm_with_status(status: str) -> "frappe.model.document.Document":
 
 class TestVirtualMachineLifecycle(IntegrationTestCase):
 	def setUp(self) -> None:
-		_ensure_server()
-		_ensure_image()
+		_ensure_test_server()
+		_ensure_test_image()
 		# Clean up VMs from prior tests to free the /124 IPv6 range.
 		for name in frappe.get_all("Virtual Machine", pluck="name"):
 			frappe.delete_doc("Virtual Machine", name, force=1, ignore_permissions=True)
@@ -33,9 +34,8 @@ class TestVirtualMachineLifecycle(IntegrationTestCase):
 		from atlas.atlas.doctype.virtual_machine import virtual_machine as module
 
 		vm = _vm_with_status("Stopped")
-		task = MagicMock()
-		task.name = "task-start-1"
-		with patch.object(module, "run_task_on_server", return_value=task) as mocked:
+		task = fake_task(name="task-start-1")
+		with patch.object(module, "run_task", return_value=task) as mocked:
 			result = vm.start()
 		self.assertEqual(result, "task-start-1")
 		vm.reload()
@@ -53,9 +53,8 @@ class TestVirtualMachineLifecycle(IntegrationTestCase):
 		from atlas.atlas.doctype.virtual_machine import virtual_machine as module
 
 		vm = _vm_with_status("Running")
-		task = MagicMock()
-		task.name = "task-stop-1"
-		with patch.object(module, "run_task_on_server", return_value=task) as mocked:
+		task = fake_task(name="task-stop-1")
+		with patch.object(module, "run_task", return_value=task) as mocked:
 			result = vm.stop()
 		self.assertEqual(result, "task-stop-1")
 		vm.reload()
@@ -73,12 +72,10 @@ class TestVirtualMachineLifecycle(IntegrationTestCase):
 		from atlas.atlas.doctype.virtual_machine import virtual_machine as module
 
 		vm = _vm_with_status("Running")
-		stop_task = MagicMock()
-		stop_task.name = "task-stop-r"
-		start_task = MagicMock()
-		start_task.name = "task-start-r"
+		stop_task = fake_task(name="task-stop-r")
+		start_task = fake_task(name="task-start-r")
 		with patch.object(
-			module, "run_task_on_server", side_effect=[stop_task, start_task]
+			module, "run_task", side_effect=[stop_task, start_task]
 		) as mocked:
 			result = vm.restart()
 		self.assertEqual(result, {"stop_task": "task-stop-r", "start_task": "task-start-r"})
@@ -92,10 +89,9 @@ class TestVirtualMachineLifecycle(IntegrationTestCase):
 		from atlas.atlas.doctype.virtual_machine import virtual_machine as module
 
 		vm = _vm_with_status("Stopped")
-		start_task = MagicMock()
-		start_task.name = "task-start-only"
+		start_task = fake_task(name="task-start-only")
 		with patch.object(
-			module, "run_task_on_server", return_value=start_task
+			module, "run_task", return_value=start_task
 		) as mocked:
 			result = vm.restart()
 		self.assertEqual(result, {"stop_task": None, "start_task": "task-start-only"})
@@ -113,9 +109,8 @@ class TestVirtualMachineLifecycle(IntegrationTestCase):
 		from atlas.atlas.doctype.virtual_machine import virtual_machine as module
 
 		vm = _vm_with_status("Running")
-		task = MagicMock()
-		task.name = "task-del-1"
-		with patch.object(module, "run_task_on_server", return_value=task) as mocked:
+		task = fake_task(name="task-del-1")
+		with patch.object(module, "run_task", return_value=task) as mocked:
 			result = vm.delete_vm()
 		self.assertEqual(result, "task-del-1")
 		vm.reload()
@@ -129,7 +124,7 @@ class TestVirtualMachineLifecycle(IntegrationTestCase):
 		vm = _vm_with_status("Running")
 		with patch.object(
 			module,
-			"run_task_on_server",
+			"run_task",
 			side_effect=frappe.ValidationError("delete broke"),
 		):
 			with self.assertRaises(frappe.ValidationError):
@@ -148,9 +143,8 @@ class TestVirtualMachineLifecycle(IntegrationTestCase):
 		from atlas.atlas.doctype.virtual_machine import virtual_machine as module
 
 		vm = _new_vm()  # Pending
-		task = MagicMock()
-		task.name = "task-del-p"
-		with patch.object(module, "run_task_on_server", return_value=task):
+		task = fake_task(name="task-del-p")
+		with patch.object(module, "run_task", return_value=task):
 			vm.delete_vm()
 		vm.reload()
 		self.assertEqual(vm.status, "Archived")

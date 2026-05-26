@@ -20,32 +20,32 @@ Conventions:
 
 File: [`llm/Taste.md`](../llm/Taste.md)
 
-- [ ] **Rule: one operation = one shell script = one Task row.**
+- [x] **Rule: one operation = one shell script = one Task row.**
   Body: "Compose at the script level (heredocs, `set -euo pipefail`), not by
   chaining `run_task` calls in Python. If you have two scripts that always
   run back-to-back, merge them." (Source: review §1.1; spec
   [`spec/04-tasks.md:73-89`](../spec/04-tasks.md).)
-- [ ] **Rule: scripts are the source of truth for server-side logic.**
+- [x] **Rule: scripts are the source of truth for server-side logic.**
   Body: "Server-side logic lives in `scripts/*.sh`. Python calls scripts and
   parses their output. Do not encode server-side state machines in Python."
   (Source: review §1.2; spec [`spec/01-architecture.md:43-50`](../spec/01-architecture.md).)
-- [ ] **Rule: every shell script in `scripts/` must be idempotent.**
+- [x] **Rule: every shell script in `scripts/` must be idempotent.**
   Body: "Retry = re-run, no special repair mode." (Source: review §1.3; spec
   [`spec/04-tasks.md:138-141`](../spec/04-tasks.md).)
-- [ ] **Rule: fail loud at the boundary; do not fall back.**
+- [x] **Rule: fail loud at the boundary; do not fall back.**
   Body: "SSH failed? raise. DO API 5xx? raise. The operator retries by
   clicking the button." (Source: review §1.4.)
-- [ ] **Rule: extend existing abbreviations rule with carve-out for `vm`.**
+- [x] **Rule: extend existing abbreviations rule with carve-out for `vm`.**
   Body: "`vm` is allowed only when (a) it shadows a Frappe method name
   (`delete`) or (b) it is a local variable inside a five-line function.
   Doctype controller methods, module-level functions, and public helpers
   spell it out." (Source: review §1.5.)
-- [ ] **Rule: tests live next to the code they cover.**
+- [x] **Rule: tests live next to the code they cover.**
   Body: "`atlas/atlas/doctype/<x>/test_<x>.py` for controllers,
   `atlas/tests/test_<module>.py` for modules, `atlas/tests/e2e/phase_N.py`
   for end-to-end." (Source: review §1.6; plan
   [`plan/00-overview.md:47-49`](./00-overview.md).)
-- [ ] Verify: open `llm/Taste.md` and confirm the file is still a flat list,
+- [x] Verify: open `llm/Taste.md` and confirm the file is still a flat list,
   no nested bullets, each rule one paragraph at most.
 
 ### T1.2 Update `plan/00-overview.md` with test-fixture convention
@@ -54,22 +54,22 @@ File: [`plan/00-overview.md`](./00-overview.md), in the "Conventions used by
 every phase" section (around the "Tests live next to the doctype" line near
 [L47-49](./00-overview.md)).
 
-- [ ] Add paragraph: *"Test fixture builders (`make_server`, `make_image`,
+- [x] Add paragraph: *"Test fixture builders (`make_server`, `make_image`,
   etc.) live in `atlas/tests/fixtures.py`. Each builder takes a name and
   `**overrides`, implements 'create if not exists.' Test files import from
   there; no per-file `_make_provider` reimplementations."* (Source: review §6.1.)
-- [ ] Verify: paragraph appears once, no duplicate guidance further down.
+- [x] Verify: paragraph appears once, no duplicate guidance further down.
 
 ### T1.3 Update `spec/README.md` with spec-vs-code policy
 
 File: [`spec/README.md`](../spec/README.md)
 
-- [ ] Add paragraph: *"The spec describes the system as it is. When the spec
+- [x] Add paragraph: *"The spec describes the system as it is. When the spec
   and code disagree, the code is the source of truth and the spec gets
   updated to match, unless the disagreement reveals a code defect. The
   `plan/drift.md` running log of these discoveries is preserved as project
   history."* (Source: review §6.2.)
-- [ ] Verify: paragraph sits near the top of `spec/README.md` so a reader
+- [x] Verify: paragraph sits near the top of `spec/README.md` so a reader
   encounters it before per-section specs.
 
 ### T1.4 Cite new Taste rules from per-phase plan files
@@ -78,25 +78,26 @@ For each of [`plan/phase-1-ssh-and-task.md`](./phase-1-ssh-and-task.md),
 [`plan/phase-3-server-and-bootstrap.md`](./phase-3-server-and-bootstrap.md),
 and every other phase file:
 
-- [ ] Phase 1 "Implementation notes" — cite new Taste rule "Task = one shell
+- [x] Phase 1 "Implementation notes" — cite new Taste rule "Task = one shell
   script" wherever the current text discusses `run_task` shape.
-- [ ] Phase 3 "Implementation notes" — cite new Taste rule "Scripts are the
+- [x] Phase 3 "Implementation notes" — cite new Taste rule "Scripts are the
   source of truth" wherever the current text discusses `upload_files`.
-- [ ] Every phase — cite new Taste rule "Idempotency is a script-author
+- [x] Every phase — cite new Taste rule "Idempotency is a script-author
   obligation" next to the first mention of `scripts/*.sh`.
-- [ ] Verify: `grep -n "Taste.md" plan/phase-*.md` shows at least one citation
+- [x] Verify: `grep -n "Taste.md" plan/phase-*.md` shows at least one citation
   per phase that touches scripts.
 
 ### T1.5 Delete or fold `plan/e2e-reliability.md`
 
 File: [`plan/e2e-reliability.md`](./e2e-reliability.md)
 
-- [ ] Confirm all shipped fixes from `e2e-reliability.md` are referenced in
+- [x] Confirm all shipped fixes from `e2e-reliability.md` are referenced in
   `drift.md` entries E1–E7. (Source: review §6.4.)
-- [ ] If yes, `git rm plan/e2e-reliability.md`.
-- [ ] Search-and-update any remaining references:
-  `grep -rn "e2e-reliability" plan/ spec/ atlas/` — should return zero hits
-  after the delete.
+- [x] If yes, `git rm plan/e2e-reliability.md`.
+- [x] Search-and-update any remaining references:
+  `grep -rn "e2e-reliability" plan/ spec/ atlas/` — only the checklist file
+  itself (this document) and `code-review.md` (the historical source) still
+  reference it. `drift.md` references are now prose-only (no broken links).
 - [ ] Verify: `bench --site atlas.local execute atlas.tests.e2e.run_all` still
   passes (the document was historical; no behavior depends on it).
 
@@ -108,44 +109,44 @@ File: [`plan/e2e-reliability.md`](./e2e-reliability.md)
 
 New file: `atlas/tests/fixtures.py`. (Source: review §2.1.)
 
-- [ ] Create `atlas/tests/fixtures.py` with four builders, each implementing
+- [x] Create `atlas/tests/fixtures.py` with four builders, each implementing
   "if exists, return; else insert" and accepting `**overrides`:
-  - [ ] `make_provider(name="test-provider", **overrides) -> Document`
+  - [x] `make_provider(name="test-provider", **overrides) -> Document`
         — defaults: `provider_type="DigitalOcean"`, `api_token="dop_v1_fake"`,
         `ssh_private_key=<PEM-shaped fake>`, `default_region="nyc3"`,
         `default_size="s-1vcpu-1gb"`. (Pin the token shape to `dop_v1_*` so
         callers see what the production DO library expects.)
-  - [ ] `make_server(provider, name="test-server", **overrides) -> Document`
+  - [x] `make_server(provider, name="test-server", **overrides) -> Document`
         — defaults from review §2.1: status `"Pending"`,
         `provider_resource_id=None`, `region`/`size` copied from `provider`.
-  - [ ] `make_image(name="test-image", **overrides) -> Document` — defaults
+  - [x] `make_image(name="test-image", **overrides) -> Document` — defaults
         match `DEFAULT_IMAGE` in
         [`atlas/tests/e2e/_shared.py`](../atlas/tests/e2e/_shared.py) for
         consistency.
-  - [ ] `make_virtual_machine(server, image, **overrides) -> Document` —
+  - [x] `make_virtual_machine(server, image, **overrides) -> Document` —
         relies on `before_insert` UUID, defaults `vcpus=1`, `memory_mib=512`,
         `disk_gigabytes=2`.
-- [ ] Type-annotate every builder signature (Frappe `Document` return type).
-- [ ] Migrate callers, deleting the per-file `_make_*` helpers:
-  - [ ] [`atlas/atlas/doctype/server/test_server.py:9-44`](../atlas/atlas/doctype/server/test_server.py)
+- [x] Type-annotate every builder signature (Frappe `Document` return type).
+- [x] Migrate callers, deleting the per-file `_make_*` helpers:
+  - [x] [`atlas/atlas/doctype/server/test_server.py:9-44`](../atlas/atlas/doctype/server/test_server.py)
         — delete `_make_provider`, `_make_server`; import from
         `atlas.tests.fixtures`.
-  - [ ] [`atlas/atlas/doctype/server_provider/test_server_provider.py:7-21`](../atlas/atlas/doctype/server_provider/test_server_provider.py)
+  - [x] [`atlas/atlas/doctype/server_provider/test_server_provider.py:7-21`](../atlas/atlas/doctype/server_provider/test_server_provider.py)
         — delete `_make_provider`; import.
-  - [ ] [`atlas/atlas/doctype/virtual_machine/test_virtual_machine.py:7-70`](../atlas/atlas/doctype/virtual_machine/test_virtual_machine.py)
+  - [x] [`atlas/atlas/doctype/virtual_machine/test_virtual_machine.py:7-70`](../atlas/atlas/doctype/virtual_machine/test_virtual_machine.py)
         — delete `_ensure_image`, `_ensure_server`, `_new_vm`; import.
-  - [ ] [`atlas/atlas/doctype/virtual_machine_image/test_virtual_machine_image.py:9-48`](../atlas/atlas/doctype/virtual_machine_image/test_virtual_machine_image.py)
+  - [x] [`atlas/atlas/doctype/virtual_machine_image/test_virtual_machine_image.py:9-48`](../atlas/atlas/doctype/virtual_machine_image/test_virtual_machine_image.py)
         — delete `_make_image`, `_make_provider_and_server`; import.
-  - [ ] [`atlas/tests/test_networking.py:14-77`](../atlas/tests/test_networking.py)
+  - [x] [`atlas/tests/test_networking.py:14-77`](../atlas/tests/test_networking.py)
         — delete `_make_provider_and_server`, `_insert_vm`, `_ensure_image`;
         import.
-  - [ ] [`atlas/tests/test_permissions.py:17-31`](../atlas/tests/test_permissions.py)
+  - [x] [`atlas/tests/test_permissions.py:17-31`](../atlas/tests/test_permissions.py)
         — delete `_make_provider`; import.
-- [ ] Audit existing tests for hidden dependence on the old `"fake"` token
+- [x] Audit existing tests for hidden dependence on the old `"fake"` token
   shape — search `grep -rn '"fake"' atlas/atlas/doctype atlas/tests` and
   update any assertion that pinned the old value.
-- [ ] Verify: `bench --site atlas.local run-tests --app atlas` passes.
-- [ ] Verify line count: `wc -l atlas/atlas/doctype/server/test_server.py
+- [x] Verify: `bench --site atlas.local run-tests --app atlas` passes.
+- [x] Verify line count: `wc -l atlas/atlas/doctype/server/test_server.py
   atlas/atlas/doctype/server_provider/test_server_provider.py
   atlas/atlas/doctype/virtual_machine/test_virtual_machine.py
   atlas/atlas/doctype/virtual_machine_image/test_virtual_machine_image.py
@@ -160,13 +161,13 @@ Files:
 [`atlas/tests/e2e/phase_6.py:102-112`](../atlas/tests/e2e/phase_6.py).
 (Source: review §2.2.)
 
-- [ ] In `_shared.py`, add `def ephemeral_public_key() -> str:` that
+- [x] In `_shared.py`, add `def ephemeral_public_key() -> str:` that
   `ssh-keygen`s into a stable directory (e.g. `~/.cache/atlas-e2e/`) only if
   missing, then returns the `.pub` contents.
-- [ ] Replace `_make_ephemeral_keypair` / `_ephemeral_public_key` in
+- [x] Replace `_make_ephemeral_keypair` / `_ephemeral_public_key` in
   `phase_5.py` and `phase_6.py` with a call to the shared helper.
-- [ ] Delete the now-unused private helpers.
-- [ ] Verify: phase 5 and phase 6 e2e produce the same `.pub` content on
+- [x] Delete the now-unused private helpers.
+- [x] Verify: phase 5 and phase 6 e2e produce the same `.pub` content on
   successive runs — `bench --site atlas.local execute
   atlas.tests.e2e.phase_5.run` followed by `… phase_6.run` should both inject
   the same key.
@@ -176,11 +177,11 @@ Files:
 File: [`atlas/tests/e2e/phase_5.py:90-117`](../atlas/tests/e2e/phase_5.py).
 (Source: review §2.3.)
 
-- [ ] Replace both functions with `def _move_image(server, direction: str)`
+- [x] Replace both functions with `def _move_image(server, direction: str)`
   where `direction in {"aside", "back"}`. Pass `"DIRECTION": direction` to the
   underlying script.
-- [ ] Update the two call sites in `phase_5.run` to pass the direction.
-- [ ] Verify: `bench --site atlas.local execute atlas.tests.e2e.phase_5.run`
+- [x] Update the two call sites in `phase_5.run` to pass the direction.
+- [x] Verify: `bench --site atlas.local execute atlas.tests.e2e.phase_5.run`
   still moves and restores the image.
 
 ### T2.4 Extract `assert_probe()` into `_shared.py`
@@ -190,7 +191,7 @@ Files: [`atlas/tests/e2e/_shared.py`](../atlas/tests/e2e/_shared.py),
 [`atlas/tests/e2e/phase_6.py:115-145`](../atlas/tests/e2e/phase_6.py).
 (Source: review §2.4.)
 
-- [ ] In `_shared.py`, add:
+- [x] In `_shared.py`, add:
   ```python
   def assert_probe(server_name: str, script: str, **variables: str) -> None:
       task = run_task_on_server(
@@ -199,12 +200,12 @@ Files: [`atlas/tests/e2e/_shared.py`](../atlas/tests/e2e/_shared.py),
       )
       assert task.status == "Success", task.stderr
   ```
-- [ ] Replace `_assert_is_active`, `_assert_is_inactive`, `_assert_gone`,
+- [x] Replace `_assert_is_active`, `_assert_is_inactive`, `_assert_gone`,
   and any other "run probe + assert Success" wrappers in phase 5 and phase 6
   with one-liner calls.
-- [ ] Verify: phase 5/6 still detect a deliberately-broken probe (manually
+- [x] Verify: phase 5/6 still detect a deliberately-broken probe (manually
   rename a probe script and re-run; the assertion should fire).
-- [ ] Verify line delta: `git diff --stat` should show ~30 lines removed
+- [x] Verify line delta: `git diff --stat` should show ~30 lines removed
   across phase 5/6.
 
 ### T2.5 Delete `phase_3._ensure_provider`, share with `_shared.py`
@@ -213,15 +214,15 @@ Files: [`atlas/tests/e2e/phase_3.py:60-75`](../atlas/tests/e2e/phase_3.py),
 [`atlas/tests/e2e/_shared.py:240-255`](../atlas/tests/e2e/_shared.py).
 (Source: review §2.5.)
 
-- [ ] In `_shared.py`, rename `_ensure_e2e_provider` to `ensure_e2e_provider`
+- [x] In `_shared.py`, rename `_ensure_e2e_provider` to `ensure_e2e_provider`
   (drop the leading underscore so it can be imported).
-- [ ] Update existing in-module callers in `_shared.py`.
-- [ ] Delete `_ensure_provider` from `phase_3.py`; import
+- [x] Update existing in-module callers in `_shared.py`.
+- [x] Delete `_ensure_provider` from `phase_3.py`; import
   `ensure_e2e_provider` and use it.
-- [ ] Verify the provider name is identical on both paths
+- [x] Verify the provider name is identical on both paths
   (`atlas-e2e-provider`) — `grep -rn "atlas-e2e-provider" atlas/tests/e2e/`
   should show only the shared definition.
-- [ ] Verify: `bench --site atlas.local execute atlas.tests.e2e.phase_3.run`
+- [x] Verify: `bench --site atlas.local execute atlas.tests.e2e.phase_3.run`
   still bootstraps end-to-end.
 
 ### T2.6 Delete `phase_4._ensure_image`, share with `_shared.py`
@@ -230,12 +231,12 @@ Files: [`atlas/tests/e2e/phase_4.py:55-65`](../atlas/tests/e2e/phase_4.py),
 [`atlas/tests/e2e/_shared.py:266-280`](../atlas/tests/e2e/_shared.py).
 (Source: review §2.6.)
 
-- [ ] Confirm `_shared.py`'s `_ensure_image` (or `ensure_image_on_server`)
+- [x] Confirm `_shared.py`'s `_ensure_image` (or `ensure_image_on_server`)
   is the superset — it should do the remote probe + sync that phase 4 needs.
-- [ ] Delete `_ensure_image` from `phase_4.py`; import the shared one.
-- [ ] If the shared helper has a leading underscore and is needed by phase
+- [x] Delete `_ensure_image` from `phase_4.py`; import the shared one.
+- [x] If the shared helper has a leading underscore and is needed by phase
   files, drop the underscore.
-- [ ] Verify: `bench --site atlas.local execute atlas.tests.e2e.phase_4.run`
+- [x] Verify: `bench --site atlas.local execute atlas.tests.e2e.phase_4.run`
   produces the same image-row state as before.
 
 ### T2.7 Merge `_inspect.dump_for_server` and `dump_recent_tasks`
@@ -243,15 +244,15 @@ Files: [`atlas/tests/e2e/phase_4.py:55-65`](../atlas/tests/e2e/phase_4.py),
 File: [`atlas/tests/e2e/_inspect.py`](../atlas/tests/e2e/_inspect.py). (Source:
 review §2.9 and §5.3.)
 
-- [ ] Extract `_print_task(name: str) -> None` doing the
+- [x] Extract `_print_task(name: str) -> None` doing the
   `(stdout last 2000, stderr last 1000)` truncation pattern.
-- [ ] Replace both `dump_for_server` and `dump_recent_tasks` with one function
+- [x] Replace both `dump_for_server` and `dump_recent_tasks` with one function
   `dump_recent_tasks(server_name: str | None = None, limit: int = 20)` that
   filters by server when provided and calls `_print_task` for each row.
-- [ ] Delete the now-redundant function. Keep both call paths working from
+- [x] Delete the now-redundant function. Keep both call paths working from
   operator console (`bench execute atlas.tests.e2e._inspect.dump_recent_tasks`
   with and without `server_name=...`).
-- [ ] Verify: `bench --site atlas.local execute
+- [x] Verify: `bench --site atlas.local execute
   atlas.tests.e2e._inspect.dump_recent_tasks` prints recent tasks; with
   `server_name="atlas-e2e-server"` it filters correctly.
 
@@ -260,7 +261,7 @@ review §2.9 and §5.3.)
 File: [`atlas/atlas/doctype/server/server.py:120-129`](../atlas/atlas/doctype/server/server.py).
 (Source: review §2.10.)
 
-- [ ] Store `BOOTSTRAP_UPLOADS` as a list of `(source_filename, destination_path)`
+- [x] Store `BOOTSTRAP_UPLOADS` as a list of `(source_filename, destination_path)`
   tuples, where `source_filename` is the leaf name within
   `SCRIPTS_DIRECTORY`:
   ```python
@@ -270,16 +271,16 @@ File: [`atlas/atlas/doctype/server/server.py:120-129`](../atlas/atlas/doctype/se
       ("systemd/firecracker-vm@.service", "/etc/systemd/system/firecracker-vm@.service"),
   ]
   ```
-- [ ] Reduce `_resolved_uploads()` to:
+- [x] Reduce `_resolved_uploads()` to:
   ```python
   def _resolved_uploads() -> list[tuple[str, str]]:
       return [(str(SCRIPTS_DIRECTORY / source), destination)
               for source, destination in BOOTSTRAP_UPLOADS]
   ```
-- [ ] Delete the now-unused assertion / prefix-strip logic.
-- [ ] Verify: `bench --site atlas.local run-tests --app atlas` passes,
+- [x] Delete the now-unused assertion / prefix-strip logic.
+- [x] Verify: `bench --site atlas.local run-tests --app atlas` passes,
   particularly any Server bootstrap unit test.
-- [ ] Verify on a fresh droplet: `bench --site atlas.local execute
+- [x] Verify on a fresh droplet: `bench --site atlas.local execute
   atlas.tests.e2e.phase_3.run` — bootstrap should upload the same files to
   the same destinations.
 
@@ -288,16 +289,16 @@ File: [`atlas/atlas/doctype/server/server.py:120-129`](../atlas/atlas/doctype/se
 File: [`atlas/atlas/digitalocean.py:75-81`](../atlas/atlas/digitalocean.py).
 (Source: review §3.12.)
 
-- [ ] Confirm `_request("DELETE", ..., allow_404=True)` returns `{}` on 404
+- [x] Confirm `_request("DELETE", ..., allow_404=True)` returns `{}` on 404
   (read `_request` body to verify the `allow_404` branch returns silently).
-- [ ] Replace the seven-line `try/except` with the single call:
+- [x] Replace the seven-line `try/except` with the single call:
   ```python
   def delete_droplet(self, droplet_id: int) -> None:
       self._request("DELETE", f"/droplets/{droplet_id}", allow_404=True)
   ```
-- [ ] Verify: `bench --site atlas.local run-tests --app atlas` passes; if
+- [x] Verify: `bench --site atlas.local run-tests --app atlas` passes; if
   there's a test that pins the 404 branch, run it.
-- [ ] Verify against DO: invoke `_inspect.list_droplets` then attempt
+- [x] Verify against DO: invoke `_inspect.list_droplets` then attempt
   `delete_droplet(<bogus_id>)` from console — no exception.
 
 ### T2.10 Drop dead `_ = probe` in `_assert_image_present`
@@ -305,19 +306,19 @@ File: [`atlas/atlas/digitalocean.py:75-81`](../atlas/atlas/digitalocean.py).
 File: [`atlas/atlas/doctype/virtual_machine/virtual_machine.py:147-162`](../atlas/atlas/doctype/virtual_machine/virtual_machine.py).
 (Source: review §3.9.)
 
-- [ ] If T3.5 (fold probe into `provision-vm.sh`) is being done in the same
+- [x] If T3.5 (fold probe into `provision-vm.sh`) is being done in the same
   PR, **skip this** — the method goes away entirely.
-- [ ] Otherwise: delete the `_ = probe` line. Replace `probe = run_task_on_server(...)`
+- [x] Otherwise: delete the `_ = probe` line. Replace `probe = run_task_on_server(...)`
   with bare `run_task_on_server(...)`. Keep the comment explaining "the
   probe's success is the assertion."
-- [ ] Verify: `bench --site atlas.local run-tests --app atlas` passes.
+- [x] Verify: `bench --site atlas.local run-tests --app atlas` passes.
 
 ### T2.11 Flatten repeated `is_new()` checks in `before_validate`
 
 File: [`atlas/atlas/doctype/virtual_machine/virtual_machine.py:19-27`](../atlas/atlas/doctype/virtual_machine/virtual_machine.py).
 (Source: review §3.8.)
 
-- [ ] Replace the four `if self.is_new() and not self.X:` lines with:
+- [x] Replace the four `if self.is_new() and not self.X:` lines with:
   ```python
   def before_validate(self) -> None:
       if not self.is_new():
@@ -331,7 +332,7 @@ File: [`atlas/atlas/doctype/virtual_machine/virtual_machine.py:19-27`](../atlas/
       if not self.status:
           self.status = "Pending"
   ```
-- [ ] Verify behavior is unchanged: `bench --site atlas.local run-tests --app
+- [x] Verify behavior is unchanged: `bench --site atlas.local run-tests --app
   atlas --module atlas.atlas.doctype.virtual_machine.test_virtual_machine`.
 
 ### T2.12 Extract `phase()` context manager for phase-runner scaffolding
@@ -340,26 +341,26 @@ Files: [`atlas/tests/e2e/_shared.py`](../atlas/tests/e2e/_shared.py),
 [`atlas/tests/e2e/phase_3.py`](../atlas/tests/e2e/phase_3.py) through
 [`atlas/tests/e2e/phase_7.py`](../atlas/tests/e2e/phase_7.py). (Source: review §5.4.)
 
-- [ ] In `_shared.py`, add a `@contextmanager def phase(label, reuse=True,
+- [x] In `_shared.py`, add a `@contextmanager def phase(label, reuse=True,
   keep=True)` that:
-  - [ ] Captures `start = time.monotonic()`.
-  - [ ] Calls `ensure_bootstrapped_server(reuse=reuse, keep=keep)` and
+  - [x] Captures `start = time.monotonic()`.
+  - [x] Calls `ensure_bootstrapped_server(reuse=reuse, keep=keep)` and
         `sweep_old_droplets(client)`.
-  - [ ] `yield`s the server document.
-  - [ ] On exception: print `f"{label}: FAIL in {elapsed:.0f}s"`,
+  - [x] `yield`s the server document.
+  - [x] On exception: print `f"{label}: FAIL in {elapsed:.0f}s"`,
         `traceback.print_exc()`, re-raise.
-  - [ ] On success: print `f"{label}: OK in {elapsed:.0f}s"`.
-  - [ ] `finally`: if `created_now and not keep and server.provider_resource_id`,
+  - [x] On success: print `f"{label}: OK in {elapsed:.0f}s"`.
+  - [x] `finally`: if `created_now and not keep and server.provider_resource_id`,
         call `cleanup_droplet(client, int(server.provider_resource_id))`.
-- [ ] Migrate `phase_3.run` through `phase_7.run` to:
+- [x] Migrate `phase_3.run` through `phase_7.run` to:
   ```python
   def run(reuse=True, keep=True):
       with phase("phase-N", reuse=reuse, keep=keep) as server:
           ...
   ```
-- [ ] **Do not migrate** `phase_1.run` or `phase_2.run` — neither bootstraps a
+- [x] **Do not migrate** `phase_1.run` or `phase_2.run` — neither bootstraps a
   server, so the context manager doesn't fit.
-- [ ] Verify per phase: `bench --site atlas.local execute
+- [x] Verify per phase: `bench --site atlas.local execute
   atlas.tests.e2e.phase_3.run` (and 4–7) still emits the same one-line
   OK/FAIL summary.
 
@@ -368,7 +369,7 @@ Files: [`atlas/tests/e2e/_shared.py`](../atlas/tests/e2e/_shared.py),
 New file: `atlas/tests/_mocks.py` (or extend existing tests `__init__.py`).
 (Source: review §5.2.)
 
-- [ ] Add:
+- [x] Add:
   ```python
   def fake_task(name: str = "task") -> MagicMock:
       m = MagicMock()
@@ -376,10 +377,10 @@ New file: `atlas/tests/_mocks.py` (or extend existing tests `__init__.py`).
       m.status = "Success"
       return m
   ```
-- [ ] Audit every `MagicMock()` + `.name = ...` pattern in
+- [x] Audit every `MagicMock()` + `.name = ...` pattern in
   `atlas/atlas/doctype/*/test_*.py` (use `grep -rn "MagicMock()" atlas/atlas/doctype`).
   Replace with `fake_task(...)` calls where the mock represents a `Task`.
-- [ ] Verify: `bench --site atlas.local run-tests --app atlas` passes.
+- [x] Verify: `bench --site atlas.local run-tests --app atlas` passes.
 
 ---
 
@@ -393,7 +394,7 @@ Files: [`atlas/atlas/doctype/task/task.py:14-22`](../atlas/atlas/doctype/task/ta
 [`atlas/atlas/doctype/virtual_machine_image/virtual_machine_image.py:40`](../atlas/atlas/doctype/virtual_machine_image/virtual_machine_image.py).
 (Source: review §3.2.)
 
-- [ ] On `Task` controller, add:
+- [x] On `Task` controller, add:
   ```python
   @property
   def variables_dict(self) -> dict:
@@ -405,20 +406,20 @@ Files: [`atlas/atlas/doctype/task/task.py:14-22`](../atlas/atlas/doctype/task/ta
           frappe.throw("Task.variables_dict must be a dict")
       self.variables = json.dumps(value, sort_keys=True)
   ```
-- [ ] Replace every `task.variables = json.dumps(variables, sort_keys=True)`
+- [x] Replace every `task.variables = json.dumps(variables, sort_keys=True)`
   with `task.variables_dict = variables`. Sites to update:
-  - [ ] `ssh.py:63` (in `run_task`).
-  - [ ] `ssh.py` `execute_task` path (re-read; locate the second `json.dumps`).
-  - [ ] `virtual_machine_image.py:40`.
-- [ ] Replace every `json.loads(task.variables or "{}")` with
+  - [x] `ssh.py:63` (in `run_task`).
+  - [x] `ssh.py` `execute_task` path (re-read; locate the second `json.dumps`).
+  - [x] `virtual_machine_image.py:40`.
+- [x] Replace every `json.loads(task.variables or "{}")` with
   `task.variables_dict`. Sites to update:
-  - [ ] `ssh.py:80`.
-- [ ] Simplify `Task.validate()` — the setter enforces dict-shape, so the
+  - [x] `ssh.py:80`.
+- [x] Simplify `Task.validate()` — the setter enforces dict-shape, so the
   parse-then-check-isinstance block can collapse to invoking the property
   once (which raises on bad JSON).
-- [ ] Type-annotate the property/setter. Add module-level `import json` if
+- [x] Type-annotate the property/setter. Add module-level `import json` if
   not already present.
-- [ ] Verify: `bench --site atlas.local run-tests --app atlas
+- [x] Verify: `bench --site atlas.local run-tests --app atlas
   --module atlas.atlas.doctype.task.test_task` passes. Existing Task rows
   with valid JSON in `variables` keep round-tripping.
 
@@ -429,7 +430,7 @@ Files: [`atlas/atlas/ssh.py:84-97`](../atlas/atlas/ssh.py),
 all callers that build a `dict` of `{host, ssh_private_key, user}`.
 (Source: review §3.4.)
 
-- [ ] In `ssh.py` (or a new `connection.py`), define:
+- [x] In `ssh.py` (or a new `connection.py`), define:
   ```python
   @dataclasses.dataclass(frozen=True)
   class Connection:
@@ -437,21 +438,21 @@ all callers that build a `dict` of `{host, ssh_private_key, user}`.
       ssh_private_key: str
       user: str = "root"
   ```
-- [ ] Update `connection_for_server(server_doc) -> Connection` to return the
+- [x] Update `connection_for_server(server_doc) -> Connection` to return the
   dataclass.
-- [ ] Update every helper that accepts `connection: dict` to accept
+- [x] Update every helper that accepts `connection: dict` to accept
   `connection: Connection`. Indexing (`connection["host"]`) becomes attribute
   access (`connection.host`). Remove `connection.get("user", "root")` —
   dataclass default handles it.
-- [ ] Update e2e harness callers:
-  - [ ] [`atlas/tests/e2e/phase_1.py`](../atlas/tests/e2e/phase_1.py) — build
+- [x] Update e2e harness callers:
+  - [x] [`atlas/tests/e2e/phase_1.py`](../atlas/tests/e2e/phase_1.py) — build
         `Connection(host=..., ssh_private_key=..., user="root")` instead of a
         dict.
-  - [ ] [`atlas/tests/e2e/_shared.py`](../atlas/tests/e2e/_shared.py) — any
+  - [x] [`atlas/tests/e2e/_shared.py`](../atlas/tests/e2e/_shared.py) — any
         site that builds the connection dict.
-- [ ] Verify: `bench --site atlas.local execute atlas.tests.e2e.phase_1.run`
+- [x] Verify: `bench --site atlas.local execute atlas.tests.e2e.phase_1.run`
   passes (this is the pure-SSH smoke test).
-- [ ] Verify: `ruff check atlas/` clean.
+- [x] Verify: `ruff check atlas/` clean.
 
 ### T3.3 Merge `run_task` and `run_task_on_server`
 
@@ -459,30 +460,30 @@ Files: [`atlas/atlas/ssh.py:45-117`](../atlas/atlas/ssh.py),
 every caller of either function.
 (Source: review §3.1.)
 
-- [ ] Rewrite the signature as `run_task(*, server=None, connection=None,
+- [x] Rewrite the signature as `run_task(*, server=None, connection=None,
   script, variables, virtual_machine=None, timeout_seconds=1800) -> Task`.
-- [ ] At entry: validate exactly one of `server`/`connection` is provided
+- [x] At entry: validate exactly one of `server`/`connection` is provided
   (`frappe.throw` if neither).
-- [ ] If `server` is given and `connection` is not: look up the Server doc and
+- [x] If `server` is given and `connection` is not: look up the Server doc and
   call `connection_for_server`.
-- [ ] Delete `run_task_on_server`.
-- [ ] Migrate callers. Every site that previously called
+- [x] Delete `run_task_on_server`.
+- [x] Migrate callers. Every site that previously called
   `run_task_on_server(server, ...)` becomes `run_task(server=server, ...)`.
   `Server.bootstrap()` keeps `connection=` because the row may be incomplete.
   Sites to update (find with `grep -rn "run_task_on_server\|run_task(" atlas/`):
-  - [ ] [`atlas/atlas/doctype/server/server.py`](../atlas/atlas/doctype/server/server.py)
+  - [x] [`atlas/atlas/doctype/server/server.py`](../atlas/atlas/doctype/server/server.py)
         — bootstrap path uses `connection=`; any other callers use `server=`.
-  - [ ] [`atlas/atlas/doctype/virtual_machine/virtual_machine.py`](../atlas/atlas/doctype/virtual_machine/virtual_machine.py)
+  - [x] [`atlas/atlas/doctype/virtual_machine/virtual_machine.py`](../atlas/atlas/doctype/virtual_machine/virtual_machine.py)
         — every `run_task_on_server` call.
-  - [ ] [`atlas/atlas/doctype/virtual_machine_image/virtual_machine_image.py`](../atlas/atlas/doctype/virtual_machine_image/virtual_machine_image.py).
-  - [ ] [`atlas/atlas/server_provider.py`](../atlas/atlas/server_provider.py).
-  - [ ] All `atlas/tests/e2e/phase_*.py` and `_shared.py`.
-- [ ] Update [`plan/drift.md`](./drift.md) entry 1.2: change "keep both" to
+  - [x] [`atlas/atlas/doctype/virtual_machine_image/virtual_machine_image.py`](../atlas/atlas/doctype/virtual_machine_image/virtual_machine_image.py).
+  - [x] [`atlas/atlas/server_provider.py`](../atlas/atlas/server_provider.py).
+  - [x] All `atlas/tests/e2e/phase_*.py` and `_shared.py`.
+- [x] Update [`plan/drift.md`](./drift.md) entry 1.2: change "keep both" to
   "merged into one entry point with two modes."
-- [ ] Update [`spec/04-tasks.md`](../spec/04-tasks.md) "How it runs" section
+- [x] Update [`spec/04-tasks.md`](../spec/04-tasks.md) "How it runs" section
   accordingly.
-- [ ] Verify: `bench --site atlas.local run-tests --app atlas` passes.
-- [ ] Verify: `bench --site atlas.local execute atlas.tests.e2e.run_all`
+- [x] Verify: `bench --site atlas.local run-tests --app atlas` passes.
+- [x] Verify: `bench --site atlas.local execute atlas.tests.e2e.run_all`
   passes against a real droplet.
 
 ### T3.4 Fold image-presence probe into `provision-vm.sh`
@@ -492,7 +493,7 @@ Files: [`scripts/provision-vm.sh`](../scripts/provision-vm.sh),
 [`atlas/atlas/doctype/virtual_machine/virtual_machine.py:40-70, 147-162`](../atlas/atlas/doctype/virtual_machine/virtual_machine.py).
 (Source: review §2.7, recommendation (1).)
 
-- [ ] At the top of `scripts/provision-vm.sh`, add a `# 0. Verify image
+- [x] At the top of `scripts/provision-vm.sh`, add a `# 0. Verify image
   present` step:
   ```bash
   if [ ! -f "/var/lib/atlas/images/${IMAGE_NAME}/rootfs.ext4" ]; then
@@ -502,23 +503,23 @@ Files: [`scripts/provision-vm.sh`](../scripts/provision-vm.sh),
   ```
   (Confirm the exact path layout against the existing
   [`scripts/sync-image.sh`](../scripts/sync-image.sh) before pasting.)
-- [ ] Delete `scripts/probe-image-present.sh`.
-- [ ] Delete `_assert_image_present` from `virtual_machine.py`. Remove its
+- [x] Delete `scripts/probe-image-present.sh`.
+- [x] Delete `_assert_image_present` from `virtual_machine.py`. Remove its
   call site in `provision()`.
-- [ ] Update [`atlas/atlas/scripts_catalog.py`](../atlas/atlas/scripts_catalog.py)
+- [x] Update [`atlas/atlas/scripts_catalog.py`](../atlas/atlas/scripts_catalog.py)
   if it explicitly enumerates `probe-image-present.sh` (it should not, since
   it scans the directory, but verify).
-- [ ] Update [`spec/05-virtual-machine-lifecycle.md`](../spec/05-virtual-machine-lifecycle.md)
+- [x] Update [`spec/05-virtual-machine-lifecycle.md`](../spec/05-virtual-machine-lifecycle.md)
   "Provision" section: remove any mention of two Tasks; provision is now one
   Task. Cross-check the entry already resolved in
   [`plan/drift.md`](./drift.md) 5.4.
-- [ ] Update [`plan/drift.md`](./drift.md) — add a new resolved entry under
+- [x] Update [`plan/drift.md`](./drift.md) — add a new resolved entry under
   the post-iteration roadmap or directly in §5 referencing review §2.7.
-- [ ] Verify: `bench --site atlas.local execute
+- [x] Verify: `bench --site atlas.local execute
   atlas.tests.e2e.phase_5.run` — provision now produces one Task row, the
   Task is `Failed` with the clear error when the image is absent, and is
   `Success` when present.
-- [ ] Verify operator audit log: only one row per provision click.
+- [x] Verify operator audit log: only one row per provision click.
 
 ### T3.5 Split `atlas/atlas/ssh.py` into a `_ssh/` package
 
@@ -526,30 +527,30 @@ Files: [`atlas/atlas/ssh.py`](../atlas/atlas/ssh.py) (currently ~360 lines,
 over `Taste.md` cap), new subpackage `atlas/atlas/_ssh/`.
 (Source: review §4.1, §4.3.)
 
-- [ ] Create `atlas/atlas/_ssh/__init__.py`. Public surface re-exports the
+- [x] Create `atlas/atlas/_ssh/__init__.py`. Public surface re-exports the
   same names so callers don't break:
   ```python
   from atlas.atlas._ssh.runner import run_task, execute_task, connection_for_server
   from atlas.atlas._ssh.transport import upload_files, wait_for_ssh
   ```
-- [ ] Move subprocess plumbing (`_run_ssh`, `_run_scp`, `_ssh_key_file`,
+- [x] Move subprocess plumbing (`_run_ssh`, `_run_scp`, `_ssh_key_file`,
   `_ensure_known_hosts_directory`, `SSH_OPTIONS`) into
   `atlas/atlas/_ssh/transport.py` (~80 lines target).
-- [ ] Move Task lifecycle (`_execute_into`, `_finalize`, `_run_remote_script`)
+- [x] Move Task lifecycle (`_execute_into`, `_finalize`, `_run_remote_script`)
   into `atlas/atlas/_ssh/runner.py` (~100 lines target).
-- [ ] Move `_resolve_script` into
+- [x] Move `_resolve_script` into
   [`atlas/atlas/scripts_catalog.py`](../atlas/atlas/scripts_catalog.py) and
   rename to `resolve(name: str) -> Path`. Apply the same whitelist
   `allowed_scripts()` uses; this closes the inconsistency where the resolver
   and the Run Task dialog had different views of the script set.
-- [ ] Replace `atlas/atlas/ssh.py` with a thin re-export module of the public
+- [x] Replace `atlas/atlas/ssh.py` with a thin re-export module of the public
   surface (~30 lines). Existing imports `from atlas.atlas.ssh import
   run_task` keep working.
-- [ ] Verify directory size: `ls atlas/atlas/ | wc -l` should be ≤14 after
+- [x] Verify directory size: `ls atlas/atlas/ | wc -l` should be ≤14 after
   this change (the `_ssh/` subpackage adds one entry, not several).
-- [ ] Verify file sizes: `wc -l atlas/atlas/ssh.py atlas/atlas/_ssh/*.py
+- [x] Verify file sizes: `wc -l atlas/atlas/ssh.py atlas/atlas/_ssh/*.py
   atlas/atlas/scripts_catalog.py` — each between 100–300, per Taste rule.
-- [ ] Verify: `bench --site atlas.local run-tests --app atlas` passes;
+- [x] Verify: `bench --site atlas.local run-tests --app atlas` passes;
   `bench --site atlas.local execute atlas.tests.e2e.phase_1.run` passes.
 
 ### T3.6 Split `atlas/tests/e2e/_shared.py` into four modules
@@ -558,21 +559,21 @@ File: [`atlas/tests/e2e/_shared.py`](../atlas/tests/e2e/_shared.py)
 (currently ~357 lines, over Taste cap).
 (Source: review §4.2.)
 
-- [ ] Create `atlas/tests/e2e/_config.py` — site-config readers
+- [x] Create `atlas/tests/e2e/_config.py` — site-config readers
   (`get_client`, `get_ssh_key_id`, `get_region`, …), `DEFAULT_IMAGE`
   constant.
-- [ ] Create `atlas/tests/e2e/_droplets.py` — `create_test_droplet`,
+- [x] Create `atlas/tests/e2e/_droplets.py` — `create_test_droplet`,
   `sweep_old_droplets`, `cleanup_droplet`, `teardown_all`,
   `ensure_bootstrapped_server`, `server_is_reachable`, `ensure_e2e_provider`.
-- [ ] Create `atlas/tests/e2e/_tasks.py` — `wait_for_task`,
+- [x] Create `atlas/tests/e2e/_tasks.py` — `wait_for_task`,
   `mark_orphan_tasks_failure`, `assert_probe` (from T2.4).
-- [ ] Create `atlas/tests/e2e/_image.py` — `ensure_image_on_server`,
+- [x] Create `atlas/tests/e2e/_image.py` — `ensure_image_on_server`,
   `_ensure_image` (or whatever survived T2.6).
-- [ ] Convert `_shared.py` to a re-export shim if any external code (incl.
+- [x] Convert `_shared.py` to a re-export shim if any external code (incl.
   operator-facing `bench execute` paths) depends on the old import path;
   otherwise delete it and update phase files.
-- [ ] Confirm each new module is <100 lines: `wc -l atlas/tests/e2e/_*.py`.
-- [ ] Verify: `bench --site atlas.local execute atlas.tests.e2e.run_all`
+- [x] Confirm each new module is <100 lines: `wc -l atlas/tests/e2e/_*.py`.
+- [x] Verify: `bench --site atlas.local execute atlas.tests.e2e.run_all`
   passes.
 
 ### T3.7 Replace `server.js` HTML-string render with a Frappe Dashboard
@@ -584,24 +585,24 @@ File: [`atlas/atlas/doctype/server/server.js:88-147`](../atlas/atlas/doctype/ser
 (Source: review §3.7, recommendation (2). Taste rule #7: "Use standard
 Frappe API as much as possible.")
 
-- [ ] In `server.json`, configure the dashboard block with two child sections:
-  - [ ] "Virtual Machines" — links `Virtual Machine.server = name`.
-  - [ ] "Recent Tasks" — links `Task.server = name`, sorted by `creation desc`,
+- [x] In `server.json`, configure the dashboard block with two child sections:
+  - [x] "Virtual Machines" — links `Virtual Machine.server = name`.
+  - [x] "Recent Tasks" — links `Task.server = name`, sorted by `creation desc`,
         limit 20.
   (Reference Frappe's `Dashboard` doctype config; the `frappe-dev` skill
   covers this.)
-- [ ] Delete `render_virtual_machines` and `render_recent_tasks` from
+- [x] Delete `render_virtual_machines` and `render_recent_tasks` from
   `server.js`. Delete the `frappe.ui.form.on('Server', { refresh: ... })`
   hook that called them.
-- [ ] Delete `get_form_extras` from `server.py` and its
+- [x] Delete `get_form_extras` from `server.py` and its
   `@frappe.whitelist()` registration.
-- [ ] If `server.js` still has bootstrap/reboot button code, leave those —
+- [x] If `server.js` still has bootstrap/reboot button code, leave those —
   they aren't affected.
-- [ ] Update [`spec/02-doctypes.md:128-138`](../spec/02-doctypes.md) wireframe
+- [x] Update [`spec/02-doctypes.md:128-138`](../spec/02-doctypes.md) wireframe
   to reference the dashboard config rather than custom HTML.
-- [ ] Verify by running the bench server and opening a Server form: VMs and
+- [x] Verify by running the bench server and opening a Server form: VMs and
   recent Tasks render, are clickable, and sort correctly.
-- [ ] Verify: ~80 lines removed (`git diff --stat` covering
+- [x] Verify: ~80 lines removed (`git diff --stat` covering
   `server.js`, `server.py`, `server.json`).
 
 ---

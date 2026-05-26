@@ -3,27 +3,12 @@ from unittest.mock import MagicMock, patch
 import frappe
 from frappe.tests import IntegrationTestCase
 
-
-def _make_provider(name: str = "test-provider") -> "frappe.model.document.Document":
-	if frappe.db.exists("Server Provider", name):
-		return frappe.get_doc("Server Provider", name)
-	return frappe.get_doc({
-		"doctype": "Server Provider",
-		"provider_name": name,
-		"provider_type": "DigitalOcean",
-		"api_token": "dop_v1_fake",
-		"ssh_key_id": "fp:fingerprint",
-		"ssh_private_key": "-----BEGIN OPENSSH PRIVATE KEY-----\nfake\n",
-		"default_region": "blr1",
-		"default_size": "s-2vcpu-4gb-intel",
-		"default_image": "ubuntu-24-04-x64",
-		"is_active": 1,
-	}).insert(ignore_permissions=True)
+from atlas.tests.fixtures import make_provider
 
 
 class TestServerProvider(IntegrationTestCase):
 	def setUp(self) -> None:
-		self.provider = _make_provider()
+		self.provider = make_provider()
 
 	def test_test_connection_ok(self) -> None:
 		fake_client = MagicMock()

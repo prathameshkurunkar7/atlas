@@ -5,15 +5,12 @@ import frappe
 from frappe.model.document import Document
 
 from atlas.atlas import scripts_catalog
-from atlas.atlas.ssh import run_task, run_task_on_server, upload_files
+from atlas.atlas.ssh import run_task, upload_files
 
 BOOTSTRAP_UPLOADS = [
-	("scripts/vm-network-up.sh", "/var/lib/atlas/bin/vm-network-up.sh"),
-	("scripts/vm-network-down.sh", "/var/lib/atlas/bin/vm-network-down.sh"),
-	(
-		"scripts/systemd/firecracker-vm@.service",
-		"/etc/systemd/system/firecracker-vm@.service",
-	),
+	("vm-network-up.sh", "/var/lib/atlas/bin/vm-network-up.sh"),
+	("vm-network-down.sh", "/var/lib/atlas/bin/vm-network-down.sh"),
+	("systemd/firecracker-vm@.service", "/etc/systemd/system/firecracker-vm@.service"),
 ]
 
 BOOTSTRAP_ALLOWED_STATUS = {"Pending", "Bootstrapping", "Active", "Broken"}
@@ -66,7 +63,7 @@ class Server(Document):
 			frappe.throw("variables must be a JSON object")
 		if script not in scripts_catalog.allowed_scripts():
 			frappe.throw(f"Unknown script: {script}")
-		task = run_task_on_server(
+		task = run_task(
 			server=self.name,
 			script=script,
 			variables=variables,
@@ -78,30 +75,6 @@ class Server(Document):
 	def get_scripts(self) -> list[str]:
 		"""Whitelisted: scripts available for Run Task dialog."""
 		return scripts_catalog.allowed_scripts()
-
-	@frappe.whitelist()
-	def get_form_extras(self) -> dict:
-		"""Whitelisted: lists rendered into HTML areas on the form."""
-		virtual_machines = frappe.get_all(
-			"Virtual Machine",
-			filters={"server": self.name},
-			fields=["name", "description", "status", "vcpus",
-			        "memory_megabytes", "ipv6_address"],
-			order_by="creation desc",
-			limit=50,
-		)
-		recent_tasks = frappe.get_all(
-			"Task",
-			filters={"server": self.name},
-			fields=["name", "script", "status", "duration_milliseconds",
-			        "creation"],
-			order_by="creation desc",
-			limit=10,
-		)
-		return {
-			"virtual_machines": virtual_machines,
-			"recent_tasks": recent_tasks,
-		}
 
 	def _absorb_bootstrap_output(self, stdout: str) -> None:
 		fields = {"FIRECRACKER_VERSION": "firecracker_version",
@@ -119,11 +92,7 @@ class Server(Document):
 
 def _resolved_uploads() -> list[tuple[str, str]]:
 	from atlas.atlas.ssh import SCRIPTS_DIRECTORY  # noqa: PLC0415
-	resolved = []
-	for local, remote in BOOTSTRAP_UPLOADS:
-		# `local` is relative to the repo root; SCRIPTS_DIRECTORY ends in /scripts,
-		# so strip the leading "scripts/" and re-join.
-		assert local.startswith("scripts/"), local
-		local_path = SCRIPTS_DIRECTORY / local[len("scripts/"):]
-		resolved.append((str(local_path), remote))
-	return resolved
+	return [
+		(str(SCRIPTS_DIRECTORY / source), destination)
+		for source, destination in BOOTSTRAP_UPLOADS
+	]

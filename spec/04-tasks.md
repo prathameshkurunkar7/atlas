@@ -25,15 +25,14 @@ Concretely, a Task is a row in `Task` with:
 ```
 atlas/atlas/atlas/ssh.py:
 
-    def run_task(connection, script, variables, ...) -> Task:
-        # Low-level primitive: takes an already-built connection dict and
-        # runs one script. Used directly during bootstrap (before a Server
-        # row exists).
-        ...
-
-    def run_task_on_server(server, script, variables, ...) -> Task:
-        # Convenience wrapper: builds the connection dict from a Server doc
-        # and delegates to run_task. This is what every DocType button calls.
+    def run_task(*, script, variables, server=None, connection=None,
+                 virtual_machine=None, timeout_seconds=1800) -> Task:
+        # One entry point with two modes (exactly one required):
+        #   server=<name>     — production path. Loads the Server doc and
+        #                       builds the Connection from it. This is what
+        #                       every DocType button calls.
+        #   connection=<obj>  — bootstrap path. Used before the Server row's
+        #                       provider linkage is usable.
         ...
 ```
 

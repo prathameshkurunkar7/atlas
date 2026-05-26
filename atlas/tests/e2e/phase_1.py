@@ -5,7 +5,7 @@ import traceback
 
 import frappe
 
-from atlas.atlas.ssh import run_task
+from atlas.atlas.ssh import Connection, run_task
 from atlas.tests.e2e._shared import MissingConfig, get_phase1_connection
 
 
@@ -31,7 +31,7 @@ def run() -> None:
 	print(f"phase-1: OK in {elapsed:.0f}s")
 
 
-def _check_happy_path(connection: dict) -> None:
+def _check_happy_path(connection: Connection) -> None:
 	task = run_task(
 		connection=connection,
 		script="phase1-probe.sh",
@@ -42,7 +42,7 @@ def _check_happy_path(connection: dict) -> None:
 	assert "hello hi" in task.stdout, f"stdout missing 'hello hi': {task.stdout!r}"
 
 
-def _check_failure(connection: dict) -> None:
+def _check_failure(connection: Connection) -> None:
 	caught = False
 	try:
 		run_task(
@@ -60,7 +60,7 @@ def _check_failure(connection: dict) -> None:
 	assert "boom" in task.stderr
 
 
-def _check_missing_script(connection: dict) -> None:
+def _check_missing_script(connection: Connection) -> None:
 	caught = False
 	try:
 		run_task(

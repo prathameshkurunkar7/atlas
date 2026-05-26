@@ -35,6 +35,11 @@ This phase is small in code, large in operator value.
 
 ### Scripts (new)
 
+Per Taste rule "every shell script in `scripts/` must be idempotent" (see
+[`../llm/Taste.md`](../llm/Taste.md)): rebooting an already-rebooting host
+is harmless; the operator clicks Reboot again. There is no special "retry
+after partial reboot" path.
+
 - `scripts/reboot-server.sh` — one-liner: `sudo systemctl reboot`. We make
   it a real script so the path through `run_task` is uniform.
 

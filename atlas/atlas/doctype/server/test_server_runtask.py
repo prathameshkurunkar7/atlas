@@ -1,30 +1,44 @@
 """Unit tests for Phase 7: Run Task dialog + form extras."""
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
 
 from atlas.atlas import scripts_catalog
-from atlas.atlas.doctype.server.test_server import _make_server
+from atlas.tests._mocks import fake_task
+from atlas.tests.fixtures import make_provider, make_server
+
+
+def _server_for(suffix: str) -> "frappe.model.document.Document":
+	provider = make_provider("test-provider-server")
+	return make_server(
+		provider,
+		f"test-server-{suffix}",
+		provider_resource_id="1",
+		ipv4_address="10.0.0.5",
+		ipv6_address="2a03:b0c0:abcd:1234::1",
+		ipv6_prefix="2a03:b0c0:abcd:1234::/64",
+		ipv6_virtual_machine_range="2a03:b0c0:abcd:1234::/124",
+		status="Bootstrapping",
+	)
 
 
 class TestRunTaskDialog(IntegrationTestCase):
 	def setUp(self) -> None:
-		self.server = _make_server("runtask")
+		self.server = _server_for("runtask")
 
 	def test_rejects_unknown_script(self) -> None:
 		with self.assertRaises(frappe.ValidationError):
 			self.server.run_task_dialog(script="rm-rf-everything.sh", variables={})
 
-	def test_calls_run_task_on_server(self) -> None:
+	def test_calls_run_task(self) -> None:
 		from atlas.atlas.doctype.server import server as server_module
 
-		fake_task = MagicMock()
-		fake_task.name = "task-runtask-1"
+		task = fake_task(name="task-runtask-1")
 
-		with patch.object(server_module, "run_task_on_server", return_value=fake_task) as run:
+		with patch.object(server_module, "run_task", return_value=task) as run:
 			result = self.server.run_task_dialog(
 				script="bootstrap-server.sh",
 				variables={"FOO": "bar"},
@@ -40,10 +54,9 @@ class TestRunTaskDialog(IntegrationTestCase):
 	def test_parses_string_variables_as_json(self) -> None:
 		from atlas.atlas.doctype.server import server as server_module
 
-		fake_task = MagicMock()
-		fake_task.name = "task-runtask-2"
+		task = fake_task(name="task-runtask-2")
 
-		with patch.object(server_module, "run_task_on_server", return_value=fake_task) as run:
+		with patch.object(server_module, "run_task", return_value=task) as run:
 			self.server.run_task_dialog(
 				script="bootstrap-server.sh",
 				variables=json.dumps({"A": "1", "B": "2"}),
@@ -54,10 +67,9 @@ class TestRunTaskDialog(IntegrationTestCase):
 	def test_none_variables_becomes_empty_dict(self) -> None:
 		from atlas.atlas.doctype.server import server as server_module
 
-		fake_task = MagicMock()
-		fake_task.name = "task-runtask-3"
+		task = fake_task(name="task-runtask-3")
 
-		with patch.object(server_module, "run_task_on_server", return_value=fake_task) as run:
+		with patch.object(server_module, "run_task", return_value=task) as run:
 			self.server.run_task_dialog(script="bootstrap-server.sh", variables=None)
 
 		self.assertEqual(run.call_args.kwargs["variables"], {})
@@ -65,10 +77,9 @@ class TestRunTaskDialog(IntegrationTestCase):
 	def test_reboot_invokes_reboot_script(self) -> None:
 		from atlas.atlas.doctype.server import server as server_module
 
-		fake_task = MagicMock()
-		fake_task.name = "task-reboot-1"
+		task = fake_task(name="task-reboot-1")
 
-		with patch.object(server_module, "run_task_on_server", return_value=fake_task) as run:
+		with patch.object(server_module, "run_task", return_value=task) as run:
 			result = self.server.reboot()
 
 		self.assertEqual(result, "task-reboot-1")
@@ -89,16 +100,3 @@ class TestScriptsCatalog(IntegrationTestCase):
 		for entry in scripts:
 			self.assertTrue(entry.endswith(".sh"))
 			self.assertNotIn("/", entry)
-
-
-class TestGetFormExtras(IntegrationTestCase):
-	def setUp(self) -> None:
-		self.server = _make_server("extras")
-
-	def test_returns_lists(self) -> None:
-		extras = self.server.get_form_extras()
-		self.assertIsInstance(extras, dict)
-		self.assertIn("virtual_machines", extras)
-		self.assertIn("recent_tasks", extras)
-		self.assertIsInstance(extras["virtual_machines"], list)
-		self.assertIsInstance(extras["recent_tasks"], list)

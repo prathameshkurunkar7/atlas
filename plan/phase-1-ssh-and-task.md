@@ -132,6 +132,12 @@ Behavior pinned by the spec ([`../spec/04-tasks.md`](../spec/04-tasks.md#how-it-
   `execute_task` translate non-zero returncode into Task `status = Failure`
   and raise `frappe.ValidationError`.
 
+Taste cite: "One operation = one shell script = one Task row" — the
+`run_task` shape exists precisely so Python callers compose nothing; they
+hand a complete script to the SSH layer and parse the result. Two scripts
+that always run back-to-back are merged in shell, not chained from Python.
+See [`../llm/Taste.md`](../llm/Taste.md).
+
 ### Failure model
 
 - `subprocess.TimeoutExpired` → `status = Failure`,
@@ -213,7 +219,10 @@ Steps:
 2. Build the connection dict: `{host, ssh_private_key, user: "root"}`.
 3. Call `run_task(connection, script="phase1-probe.sh", variables={"NAME": "hi"})`.
    `phase1-probe.sh` is a one-liner: `echo "hello $NAME"; exit 0`.
-   It lives at `atlas/atlas/tests/e2e/scripts/phase1-probe.sh`.
+   It lives at `atlas/atlas/tests/e2e/scripts/phase1-probe.sh`. Per Taste
+   rule "every shell script in `scripts/` must be idempotent" (see
+   [`../llm/Taste.md`](../llm/Taste.md)), re-running the probe is the only
+   recovery path — there is no separate repair mode.
 4. Assert: Task row exists, status=Success, exit_code=0,
    stdout contains `hello hi`.
 5. Call a second time with a script that fails:

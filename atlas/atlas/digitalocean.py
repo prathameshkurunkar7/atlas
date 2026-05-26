@@ -73,12 +73,7 @@ class DigitalOceanClient:
 			time.sleep(ACTIVE_POLL_INTERVAL)
 
 	def delete_droplet(self, droplet_id: int) -> None:
-		try:
-			self._request("DELETE", f"/droplets/{droplet_id}", allow_404=True)
-		except DigitalOceanError as exception:
-			if "404" in str(exception):
-				return
-			raise
+		self._request("DELETE", f"/droplets/{droplet_id}", allow_404=True)
 
 	def list_droplets_by_tag(self, tag: str) -> list[dict]:
 		return self._request("GET", f"/droplets?tag_name={tag}").get("droplets", [])

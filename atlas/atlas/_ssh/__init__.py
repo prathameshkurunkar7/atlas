@@ -1,9 +1,4 @@
-"""Public SSH surface for Atlas.
-
-The implementation lives in `atlas.atlas._ssh.{runner,transport}`. This module
-re-exports the symbols every caller (controllers, e2e, tests) imports, so the
-import path `from atlas.atlas.ssh import ...` stays stable.
-"""
+"""Internal SSH package. Public surface is re-exported from `atlas.atlas.ssh`."""
 
 from atlas.atlas._ssh.runner import (
 	connection_for_server,
@@ -18,16 +13,10 @@ from atlas.atlas._ssh.transport import (
 	upload_files,
 	wait_for_ssh,
 )
-from atlas.atlas.scripts_catalog import (
-	SCRIPT_SEARCH_PATHS,
-	SCRIPTS_DIRECTORY,
-)
 
 __all__ = [
 	"KNOWN_HOSTS_PATH",
 	"REMOTE_STAGING_DIRECTORY",
-	"SCRIPTS_DIRECTORY",
-	"SCRIPT_SEARCH_PATHS",
 	"SSH_OPTIONS",
 	"Connection",
 	"connection_for_server",

@@ -29,6 +29,12 @@ For a Running VM:
 
 ### Scripts (existing files edited)
 
+Per Taste rule "every shell script in `scripts/` must be idempotent" (see
+[`../llm/Taste.md`](../llm/Taste.md)): each lifecycle script converges to
+the named end-state regardless of the prior state — `start-vm.sh` on an
+already-running VM is a no-op, `delete-vm.sh` on an absent unit exits
+clean. Retry == re-run.
+
 - [`../scripts/start-vm.sh`](../scripts/start-vm.sh),
   [`stop-vm.sh`](../scripts/stop-vm.sh),
   [`delete-vm.sh`](../scripts/delete-vm.sh) — `sudo` prefix.

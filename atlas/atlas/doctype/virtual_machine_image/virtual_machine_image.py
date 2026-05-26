@@ -1,5 +1,3 @@
-import json
-
 import frappe
 from frappe.model.document import Document
 
@@ -37,10 +35,11 @@ class VirtualMachineImage(Document):
 			"doctype": "Task",
 			"server": server_name,
 			"script": "sync-image.sh",
-			"variables": json.dumps(variables, sort_keys=True),
 			"status": "Pending",
 			"triggered_by": frappe.session.user if frappe.session else "Administrator",
-		}).insert(ignore_permissions=True)
+		})
+		task.variables_dict = variables
+		task.insert(ignore_permissions=True)
 		frappe.db.commit()
 
 		frappe.enqueue(

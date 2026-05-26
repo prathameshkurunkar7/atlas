@@ -25,6 +25,11 @@ A `Virtual Machine Image` DocType and a working **Sync to Server** /
 
 ### Scripts (existing files edited)
 
+Per Taste rule "every shell script in `scripts/` must be idempotent" (see
+[`../llm/Taste.md`](../llm/Taste.md)): re-running `sync-image.sh` on a server
+that already has the image must short-circuit on the existing checksums and
+exit clean. Retry == re-run, never a special repair mode.
+
 - [`../scripts/sync-image.sh`](../scripts/sync-image.sh) — `sudo` prefix per
   convention.
 

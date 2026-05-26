@@ -8,24 +8,17 @@ Reuses a bootstrapped server. Exercises:
 """
 
 import time
-import traceback
 
 import frappe
 
 from atlas.tests.e2e._shared import (
-	cleanup_droplet,
-	ensure_bootstrapped_server,
+	phase,
 	server_is_reachable,
-	sweep_old_droplets,
 )
 
 
 def run(reuse: bool = True, keep: bool = True) -> None:
-	start_clock = time.monotonic()
-	server, client, created_now = ensure_bootstrapped_server(reuse=reuse, keep=keep)
-	sweep_old_droplets(client)
-
-	try:
+	with phase("phase-7", reuse=reuse, keep=keep) as server:
 		# 1. Re-bootstrap via run_task_dialog (same code path as bootstrap()).
 		task_name = server.run_task_dialog(
 			script="bootstrap-server.sh",
@@ -68,14 +61,3 @@ def run(reuse: bool = True, keep: bool = True) -> None:
 			time.sleep(5)
 		else:
 			raise AssertionError("server did not come back within 5 minutes")
-	except Exception:
-		elapsed = time.monotonic() - start_clock
-		print(f"phase-7: FAIL in {elapsed:.0f}s")
-		traceback.print_exc()
-		raise
-	finally:
-		if created_now and not keep and server.provider_resource_id:
-			cleanup_droplet(client, int(server.provider_resource_id))
-
-	elapsed = time.monotonic() - start_clock
-	print(f"phase-7: OK in {elapsed:.0f}s")
