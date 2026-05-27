@@ -62,6 +62,20 @@ Before:                                               After:
 - `frappe.listview_settings.formatters` (standard hook).
 - IPv6 copy chip: tiny HTML + `navigator.clipboard.writeText`.
 
+**Implementation status (landed):** §1 is wired in
+[virtual_machine_list.js](../../atlas/atlas/doctype/virtual_machine/virtual_machine_list.js).
+The list shows `<description> · <short id>` in the subject column, a
+copy chip for IPv6 (clicking copies `ssh root@<ipv6>`), and a per-status
+indicator (`Pending` orange, `Running` green, `Stopped`/`Terminated`
+grey, `Failed` red).
+
+**Drift note:** Frappe's "subject" column (the first column in a list
+view) renders the formatter return value inside an `<a title="...">`
+where the value is plain-text escaped. HTML in the formatter would show
+as literal angle brackets. We render the short ID as plain text after
+a `·` separator instead of using a muted `<span>`. The IPv6 column is
+a non-subject cell and does honor HTML, so the copy chip works there.
+
 ### Fighting Desk?
 No.
 
@@ -118,8 +132,15 @@ if (frm.doc.status === "Pending" && frm.doc.ipv6_address) {
 ```
 
 ### Frappe components used
-- `frm.dashboard.add_indicator(html, "blue")`.
-- `frm.toggle_display`/Section collapse API (standard).
+- `frm.dashboard.add_indicator(html, color)` with an anchor that copies
+  `ssh root@<ipv6>` to the clipboard on click.
+- `frm.layout.sections.find(...).collapse(false)` to auto-expand the
+  Networking section when the VM is Pending.
+
+**Implementation status (landed):** §2 is wired. The form header carries
+an `IPv6 [...]` indicator that doubles as a copy chip. For
+`status = Pending`, the Networking section auto-expands so the operator
+sees the address before clicking Provision.
 
 ### Fighting Desk?
 No.
@@ -175,7 +196,18 @@ Three pieces:
 - `frm.dashboard.set_headline_alert(html, "red")`.
 - `frappe.new_doc("Virtual Machine", { ...prefilled... })` for the
   "Re-provision as new" route.
-- `frm.savetrash()` (standard delete).
+- `frappe.db.delete_doc("Virtual Machine", name)` behind a
+  `confirm_destructive` typed-confirm dialog (the spec called for
+  `frm.savetrash()`; `delete_doc` is the modern API and routes through
+  the same permission stack).
+
+**Implementation status (landed):** §3 is wired. Terminated VMs render a
+red headline (`⛔ Terminated <when>. This record is kept for audit;
+the VM no longer exists.`), a primary `Re-provision as new` button that
+opens a New Virtual Machine form pre-filled with the same server,
+image, vcpus, memory, disk, ssh key, and a `(clone)`-suffixed
+description, and a red `Delete record` action under `Actions ▾` that
+deletes the row after a typed short-ID confirmation.
 
 ### Fighting Desk?
 No.
@@ -300,7 +332,13 @@ For added discoverability, the **Access** section gets a read-only
 ### Frappe components used
 - `navigator.clipboard.writeText`.
 - `frappe.show_alert({message: "SSH command copied", indicator: "green"})`.
-- HTML field in the Access section.
+- HTML field (`ssh_command_html`) in the Access section.
+
+**Implementation status (landed):** §5 is wired. The Access section now
+renders `ssh root@<ipv6>` in a monospace box with a `Copy` button. The
+IPv6 dashboard indicator from §2 copies the same `ssh root@<ipv6>`
+string when clicked. Both call `navigator.clipboard.writeText` and show
+a green confirmation toast.
 
 ### Fighting Desk?
 No.
