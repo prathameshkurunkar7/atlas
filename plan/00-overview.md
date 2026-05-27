@@ -4,9 +4,7 @@ Eight phases. Each phase is independently testable and ends with an end-to-end
 run against a real DigitalOcean droplet.
 
 The spec lives in [`../spec/`](../spec/README.md). The plan does not duplicate
-the spec; it sequences the build, names every file, and pins every test. When
-the spec is ambiguous, the plan picks an answer and flags it in
-[`drift.md`](./drift.md) for later resolution.
+the spec; it sequences the build, names every file, and pins every test.
 
 ## Phases
 
@@ -33,7 +31,6 @@ Every phase file follows the same shape:
 4. **Implementation notes** — only the non-obvious; never restate the spec.
 5. **End-to-end test** — the bench command that proves it works.
 6. **What we are NOT doing in this phase** — explicit exclusions.
-7. **Spec drift introduced** — link into [`drift.md`](./drift.md).
 
 ## Conventions used by every phase
 

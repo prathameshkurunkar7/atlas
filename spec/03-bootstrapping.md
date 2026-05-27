@@ -32,10 +32,14 @@ In summary, in this order:
 4. Writes `/etc/sysctl.d/60-atlas.conf` with IPv6 forwarding and proxy NDP.
 5. Creates the `inet atlas` nftables table and `forward` chain.
 6. Creates the `/var/lib/atlas/` directory tree.
-7. Reports `FIRECRACKER_VERSION`, `KERNEL_VERSION`, `ARCHITECTURE` on stdout.
+7. Writes `FIRECRACKER_VERSION`, `KERNEL_VERSION`, `ARCHITECTURE` to
+   `/var/lib/atlas/bootstrap.json` (the single source of truth) and
+   `cat`s it on stdout.
 
-The Python side parses those `KEY=value` lines and writes them onto the
-`Server` document.
+The Python side `json.loads` the trailing JSON object and writes the
+fields onto the `Server` document. `jq` is invoked with `-nc` (compact,
+single-line) so the trailing line is a single object; the parser scans
+backwards for the last non-empty line.
 
 ### Files that must already be on the server
 
@@ -56,7 +60,7 @@ The `Server.bootstrap()` Python method orchestrates this:
 3. scp the helper scripts and unit file into place, chmod 0755
 4. scp bootstrap-server.sh into /tmp/atlas-bootstrap/
 5. ssh "FIRECRACKER_VERSION=v1.15.1 ARCHITECTURE=x86_64 bash -x /tmp/atlas-bootstrap/bootstrap-server.sh"
-6. parse trailing KEY=value lines into Server fields
+6. parse trailing JSON object from stdout into Server fields
 7. systemctl daemon-reload happens at the end of step 5
 ```
 
