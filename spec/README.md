@@ -187,14 +187,54 @@ operation's end-to-end coverage. It owns:
 Bias toward adding a check to an existing use case. Add a new use-case
 module only when the operator gets a new button.
 
+### Host facts vs. unit-covered logic
+
+Within each module, checks fall into two classes, and the cost gap
+between them is enormous:
+
+- **Host facts** — what only a real droplet, boot, or live API can prove.
+  These are why e2e exists. They are also where the wall-clock goes:
+  fresh droplet provision + bootstrap (~10 min, paid by any run that has
+  no reusable Active server), the image-sync pipeline (download + sha256
+  + unsquash + mkfs, up to 900s), each VM boot to Running (60–120s), each
+  guest SSH probe — identity, IPv4 egress (180s), and the reboot
+  drop-and-reconnect in `run_task` (30s + up to 300s poll).
+- **Unit-covered logic** — validation throws, state-machine guards, pure
+  helpers (networking math, DO response parsing, JSON-shape checks). Every
+  one is also covered by a `test_*.py` unit test that runs in
+  milliseconds with no host. They live in the e2e module too, so a full
+  run records them under one umbrella, but they do not need a host.
+
+Each module exposes both a full `run()` (host facts **and** the
+unit-covered logic) and a **`run_smoke()`** that runs only the host
+facts. `vm-lifecycle` and `vm-snapshot` smoke equals their full run —
+every step there is an on-host probe, so there is nothing to trim. The
+host-only `run_smoke` paths are what the development loop uses; the
+logic is left to the unit suite (`bench --site atlas.tests.local
+run-tests --app atlas`, seconds).
+
 ### Entry points
 
-- `bench --site atlas.tests.local execute atlas.tests.e2e.run_all` — runs
-  every use case that takes a server against **one shared bootstrapped
-  droplet** (`reuse=True, keep=True`), then deletes it at the end. The
-  regression entry point.
+Each use-case module separates the **host facts** (what only a real
+droplet, boot, or live API can prove) from the **validation throws and
+pure helpers** that the unit suite already covers in milliseconds. Two
+runner families fall out of that split:
+
+- `bench --site atlas.tests.local execute atlas.tests.e2e.run_all_smoke` —
+  the development loop. Every use case's `run_smoke` against **one shared
+  bootstrapped droplet**: boot, sync pipeline, guest identity, IPv4
+  egress, the desk HTTP wrapper. Skips everything the unit suite owns, so
+  pair it with `bench --site atlas.tests.local run-tests --app atlas`
+  (seconds). Reboot is excluded; pass
+  `run_task.run_smoke(reboot=True)` when you touched the reconnect path.
+- `bench --site atlas.tests.local execute atlas.tests.e2e.use_cases.<use_case>.run_smoke`
+  — the host-only path for **one** use case. Run only the slice you
+  touched during development.
+- `bench --site atlas.tests.local execute atlas.tests.e2e.run_all` — the
+  full regression: host facts **plus** the unit-redundant validation
+  throws, against one shared droplet, deleted at the end.
 - `bench --site atlas.tests.local execute atlas.tests.e2e.run_all_coverage` —
-  same, plus the dedicated-droplet use cases
+  `run_all` plus the dedicated-droplet use cases
   (`digitalocean_client.run`, `server_provisioning.run`). Cost: three
   billable droplets.
 - `bench --site atlas.tests.local execute atlas.tests.e2e.use_cases.<use_case>.run`
@@ -202,6 +242,11 @@ module only when the operator gets a new button.
   the shared bootstrapped server expose `run_against_shared(reuse=True,
   keep=True)` as well; they use the `phase()` context manager from
   `_droplets.py`.
+
+The dedicated-droplet host facts — fresh provision
+(`server_provisioning.run`) and the DO round trip
+(`digitalocean_client.run_smoke`) — own their own droplets and are
+invoked directly, not folded into `run_all_smoke`.
 
 Every e2e-created droplet is tagged `atlas-e2e`. The harness pre-sweep
 prints droplets older than 30 minutes so the operator can delete them

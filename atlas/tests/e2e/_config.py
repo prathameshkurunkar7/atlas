@@ -10,7 +10,6 @@ import subprocess
 import frappe
 
 from atlas.atlas.digitalocean import DigitalOceanClient
-from atlas.atlas.ssh import Connection
 
 TAG = "atlas-e2e"
 SWEEP_AGE_SECONDS = 30 * 60
@@ -64,16 +63,6 @@ def _load_key(value: str) -> str:
 		raise MissingConfig(f"ssh private key not found at {path!r}")
 	with open(path) as handle:
 		return handle.read()
-
-
-def get_phase1_connection() -> Connection:
-	host = frappe.conf.get("atlas_phase1_host")
-	key = frappe.conf.get("atlas_phase1_ssh_private_key")
-	if not host or not key:
-		raise MissingConfig(
-			"Phase 1 e2e requires atlas_phase1_host and atlas_phase1_ssh_private_key in site config."
-		)
-	return Connection(host=host, ssh_private_key=_load_key(key))
 
 
 def get_client() -> DigitalOceanClient:

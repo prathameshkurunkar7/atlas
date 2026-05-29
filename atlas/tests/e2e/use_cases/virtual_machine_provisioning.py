@@ -39,6 +39,8 @@ from atlas.tests.e2e._shared import (
 
 
 def run(reuse: bool = True, keep: bool = True) -> None:
+	"""Full path: HOST checks + the validation/logic checks the unit suite
+	also covers. See [run_smoke](#run_smoke) for the host-only dev path."""
 	with phase("vm-provisioning", reuse=reuse, keep=keep) as server:
 		image_doc = ensure_image_on_server(server.name)
 		image = image_doc.name
@@ -49,6 +51,20 @@ def run(reuse: bool = True, keep: bool = True) -> None:
 		_check_derived_fields_and_immutability(server.name, image, public_key)
 		_check_networking_helpers()
 		_check_ipv6_exhaustion(server)
+
+
+def run_smoke(reuse: bool = True, keep: bool = True) -> None:
+	"""Host-only path for development. Provisions a VM, asserts it boots, and
+	proves guest identity + IPv4 egress — the facts only a real host can show.
+
+	Skips derived-field/immutability, networking helpers, and IPv6 exhaustion:
+	those are pure logic, covered in milliseconds by `test_networking.py` and
+	`virtual_machine/test_virtual_machine.py`. Skips the image-missing negative
+	path too — it costs a VM boot to prove a host-side throw that the controller
+	unit test already exercises."""
+	with phase("vm-provisioning (smoke)", reuse=reuse, keep=keep) as server:
+		image_doc = ensure_image_on_server(server.name)
+		_check_provision_happy_path(server.name, image_doc.name, ephemeral_public_key())
 
 
 def _check_provision_image_missing(server_name: str, image: str) -> None:
