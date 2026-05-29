@@ -27,6 +27,13 @@ virtual_machine_name="${1:?virtual machine name required}"
 : "${HOST_VETH:?missing in network.env}"
 : "${NAMESPACE_VETH:?missing in network.env}"
 : "${IPV4_HOST_CIDR:?missing in network.env}"
+: "${IPV4_GUEST_CIDR:?missing in network.env}"
+
+# The guest's private v4 as a bare host address. The host routes a /32 to it
+# (the v4 analog of the VM's /128 v6 route) — a route prefix must be a network
+# address, so we cannot reuse IPV4_HOST_CIDR (a /30 carrying a host address;
+# `ip route` rejects "100.64.x.9/30" as an invalid prefix).
+ipv4_guest_address="${IPV4_GUEST_CIDR%/*}"
 
 uplink="$(ip -j -6 route show default | jq -r '.[0].dev')"
 # The default-route dev for v4 egress (may differ from the v6 uplink on a
@@ -97,7 +104,7 @@ sudo ip netns exec "$ATLAS_NETNS" ip -4 route replace default via 169.254.0.1 de
 #    guest's private v4 directly too.
 sudo ip -6 route replace "${VIRTUAL_MACHINE_IPV6}/128" via fe80::3 dev "$HOST_VETH"
 sudo ip -6 neigh replace proxy "$VIRTUAL_MACHINE_IPV6" dev "$uplink"
-sudo ip -4 route replace "$IPV4_HOST_CIDR" via 169.254.0.2 dev "$HOST_VETH"
+sudo ip -4 route replace "${ipv4_guest_address}/32" via 169.254.0.2 dev "$HOST_VETH"
 
 # 7. Forwarding rules, matching the host-side veth (the tap is no longer in the
 #    host namespace to match on). The v4 masquerade rule (host postrouting,

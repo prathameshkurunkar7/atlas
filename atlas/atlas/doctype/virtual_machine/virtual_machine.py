@@ -400,16 +400,23 @@ class VirtualMachine(Document):
 			"SSH_PUBLIC_KEY": self.ssh_public_key,
 			# Jail isolation parameters. All derived from the VM's own UUID and
 			# resource fields, so the on-host jail is reconstructible from the
-			# row. provision-vm.sh writes jail.env (read by the systemd unit) and
-			# network.env (read by vm-network-up.sh) from these.
+			# row. provision-vm.sh bakes these into the per-VM jailer-launch.sh
+			# (exec'd by the systemd unit) and writes network.env (read by
+			# vm-network-up.sh) from them.
 			"ATLAS_FC_UID": str(derive_uid(self.name)),
 			"ATLAS_NETNS": derive_netns(self.name),
 			"HOST_VETH": host_veth,
 			"NAMESPACE_VETH": namespace_veth,
-			"ATLAS_CGROUP_ARGS": " ".join(
+			# Newline-joined (one argv token per line), NOT space-joined: the
+			# jailer's `--cgroup cpu.max=<quota> <period>` value carries an
+			# internal space, so a space-joined string fed through systemd's
+			# whitespace-splitting ExecStart would shatter "100000 100000" into
+			# a stray positional the jailer rejects. provision-vm.sh rebuilds
+			# the exact argv with `mapfile` into the per-VM launcher.
+			"ATLAS_CGROUP_ARGS": "\n".join(
 				cgroup_args(self.vcpus, self.memory_megabytes, self.disk_gigabytes)
 			),
-			"ATLAS_RESOURCE_ARGS": " ".join(resource_limit_args(self.disk_gigabytes)),
+			"ATLAS_RESOURCE_ARGS": "\n".join(resource_limit_args(self.disk_gigabytes)),
 			# Per-VM NAT44 v4 egress link (host/guest /30 + gateway).
 			**self._ipv4_link_variables(),
 		}

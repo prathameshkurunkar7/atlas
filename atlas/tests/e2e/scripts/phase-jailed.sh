@@ -32,10 +32,22 @@ if [ "$actual_uid" = "0" ]; then
     exit 1
 fi
 
-# 2. Chrooted into the jail (its / is the jail root, not the host /).
-proc_root="$(sudo readlink "/proc/${pid}/root")"
-if [ "$proc_root" != "$jail_root" ]; then
-    echo "Firecracker root is ${proc_root}, expected ${jail_root} (not chrooted)" >&2
+# 2. Jailed into the chroot via the jailer's unshare+pivot_root. The jailer
+#    unshares a NEW mount namespace, pivot_root()s into the jail, unmounts the
+#    old root, then chroots — so from the host `readlink /proc/<pid>/root` reads
+#    "/" (the old root is gone inside that mount ns), NOT the host jail path.
+#    Asserting the host path would be wrong for a pivot_root jailer. Instead
+#    prove the isolation two ways: the process is in a DIFFERENT mount namespace
+#    than the host, and Firecracker — seeing the jail as "/" — created its API
+#    socket at the jail root (host path), so the chroot is real and writable.
+host_mntns="$(sudo readlink /proc/1/ns/mnt)"
+vm_mntns="$(sudo readlink "/proc/${pid}/ns/mnt")"
+if [ "$vm_mntns" = "$host_mntns" ]; then
+    echo "Firecracker shares the host mount namespace — jailer did not unshare+pivot_root" >&2
+    exit 1
+fi
+if ! sudo test -S "${jail_root}/run/firecracker.socket"; then
+    echo "no API socket at ${jail_root}/run/firecracker.socket — Firecracker's '/' is not the jail root" >&2
     exit 1
 fi
 
@@ -68,4 +80,4 @@ if ! sudo ip netns exec "$ATLAS_NETNS" ip -d link show "atlas-${VIRTUAL_MACHINE_
     fi
 fi
 
-echo "jailed OK: pid=${pid} uid=${actual_uid} root=${proc_root} memory.max=${memory_max}"
+echo "jailed OK: pid=${pid} uid=${actual_uid} mnt_ns=${vm_mntns} memory.max=${memory_max}"

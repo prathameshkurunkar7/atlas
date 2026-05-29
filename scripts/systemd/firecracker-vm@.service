@@ -5,31 +5,29 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Per-VM jail parameters, written by provision-vm.sh: ATLAS_FC_UID/GID, the
-# network-namespace name, and the assembled --cgroup / --resource-limit flag
-# strings (whitespace-split into argv below).
-EnvironmentFile=/var/lib/atlas/virtual-machines/%i/jail.env
+# The jailer re-creates its per-launch artifacts inside the jail on EVERY start
+# and aborts with EEXIST if any already exist — the device nodes it mknod()s
+# (/dev/net/tun, /dev/kvm, ...) and the firecracker.pid it writes. The jail root
+# persists on disk across stop/start, so a restart hits last boot's leftovers
+# ("Failed to create /dev/net/tun via mknod: File exists", "Failed to open file
+# /firecracker.pid: File exists"). Remove the jailer-owned dev/, the stale pid
+# file, and the stale API socket so each start gets a clean jail to re-populate.
+# The persistent rootfs/kernel/config are untouched. `-` prefix on dev/: a first
+# boot has none yet, and that is not an error.
+ExecStartPre=-/bin/rm -rf /var/lib/atlas/virtual-machines/%i/jail/firecracker/%i/root/dev
+ExecStartPre=/bin/rm -f /var/lib/atlas/virtual-machines/%i/jail/firecracker/%i/root/firecracker.pid
+ExecStartPre=/bin/rm -f /var/lib/atlas/virtual-machines/%i/jail/firecracker/%i/root/run/firecracker.socket
 # Networking (netns + veth + in-namespace tap) must exist before the jailer
 # joins the namespace; ExecStartPre runs to completion before ExecStart.
-ExecStartPre=/bin/rm -f /var/lib/atlas/virtual-machines/%i/jail/firecracker/%i/root/run/firecracker.socket
 ExecStartPre=/var/lib/atlas/bin/vm-network-up.sh %i
-# Run Firecracker under the jailer: de-privileged to the per-VM uid/gid,
-# chrooted into the per-VM jail, cgroup-v2 memory/cpu caps + fd/file rlimits,
-# and joined to the VM's own network namespace. Everything after `--` is
-# forwarded to Firecracker, with paths relative to the jail root.
-ExecStart=/usr/local/bin/jailer \
-    --id %i \
-    --exec-file /usr/local/bin/firecracker \
-    --uid ${ATLAS_FC_UID} \
-    --gid ${ATLAS_FC_GID} \
-    --cgroup-version 2 \
-    --netns /var/run/netns/${ATLAS_NETNS} \
-    $ATLAS_CGROUP_ARGS \
-    $ATLAS_RESOURCE_ARGS \
-    --chroot-base-dir /var/lib/atlas/virtual-machines/%i/jail \
-    -- \
-    --api-sock run/firecracker.socket \
-    --config-file firecracker.json
+# Run Firecracker under the jailer via the per-VM launcher that provision-vm.sh
+# generated. The launcher (not this unit) assembles the jailer argv, because the
+# --cgroup cpu.max value carries an internal space that systemd's ExecStart
+# word-splitting would shatter. The launcher de-privileges Firecracker to the
+# per-VM uid/gid, chroots it into the per-VM jail, applies cgroup-v2 memory/cpu
+# caps + fd/file rlimits, and joins the VM's own network namespace. It `exec`s
+# the jailer, so the jailer is this unit's main process (see KillMode below).
+ExecStart=/var/lib/atlas/virtual-machines/%i/jailer-launch.sh
 ExecStopPost=/var/lib/atlas/bin/vm-network-down.sh %i
 StandardOutput=append:/var/lib/atlas/virtual-machines/%i/log/firecracker.log
 StandardError=append:/var/lib/atlas/virtual-machines/%i/log/firecracker.log

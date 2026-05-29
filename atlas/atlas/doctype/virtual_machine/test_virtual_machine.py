@@ -85,14 +85,23 @@ class TestVirtualMachine(IntegrationTestCase):
 		self.assertEqual(variables["ATLAS_NETNS"], derive_netns(vm.name))
 		self.assertEqual(variables["HOST_VETH"], host_veth)
 		self.assertEqual(variables["NAMESPACE_VETH"], namespace_veth)
+		# Newline-joined (one argv token per line), NOT space-joined: the cgroup
+		# cpu.max value carries an internal space, so a space-join fed through a
+		# whitespace-splitting systemd ExecStart shatters it into a stray
+		# positional the jailer rejects. provision-vm.sh mapfile's these lines
+		# back into the exact argv. Asserting the newline join + the intact
+		# space-bearing token is the regression guard for that bug.
 		self.assertEqual(
 			variables["ATLAS_CGROUP_ARGS"],
-			" ".join(cgroup_args(vm.vcpus, vm.memory_megabytes, vm.disk_gigabytes)),
+			"\n".join(cgroup_args(vm.vcpus, vm.memory_megabytes, vm.disk_gigabytes)),
 		)
 		self.assertEqual(
 			variables["ATLAS_RESOURCE_ARGS"],
-			" ".join(resource_limit_args(vm.disk_gigabytes)),
+			"\n".join(resource_limit_args(vm.disk_gigabytes)),
 		)
+		cgroup_lines = variables["ATLAS_CGROUP_ARGS"].splitlines()
+		cpu_max = next(line for line in cgroup_lines if line.startswith("cpu.max="))
+		self.assertIn(" ", cpu_max, "cpu.max must keep its '<quota> <period>' space as one token")
 
 	def test_provision_failure_flips_status_to_failed(self) -> None:
 		"""On failure the Task is saved with `Failure`; the Task controller

@@ -19,8 +19,8 @@ else.
 │   │   │       ├── rootfs.ext4        # per-VM mutable rootfs
 │   │   │       ├── vmlinux            # hard-link to the image kernel
 │   │   │       └── run/firecracker.socket  # Firecracker API socket
-│   │   ├── network.env               # TAP/IPV6 + IPV4_HOST_CIDR + netns + veth names
-│   │   ├── jail.env                  # per-VM uid/gid, netns, cgroup/rlimit args
+│   │   ├── network.env               # TAP/IPV6 + IPV4_HOST/GUEST_CIDR + netns + veth names
+│   │   ├── jailer-launch.sh          # generated launcher the unit execs (uid/gid, netns, cgroup/rlimit baked in)
 │   │   ├── snapshots/                # disk snapshots of this VM
 │   │   │   └── <snapshot-uuid>/
 │   │   │       └── rootfs.ext4       # a copy taken while Stopped (host-owned)
@@ -55,6 +55,12 @@ else.
 - The API socket is created by Firecracker inside its jail
   (`jail/.../root/run/firecracker.socket`), not under `/var/lib/atlas/run/`.
   The legacy `run/` directory is still created by bootstrap but is unused.
+  Its absolute host path (~150 chars, the UUID nested twice) exceeds the
+  108-byte `sun_path` limit for a Unix-domain socket address, so host tools that
+  talk to it (`pause-vm.sh`, `resume-vm.sh`) `cd` into the socket's directory
+  and connect via the short relative name `firecracker.socket`. Firecracker
+  itself binds it as the relative `run/firecracker.socket` from inside the
+  chroot, where the path is short, so the bind never hit the limit.
 - Images are read-only after sync. Provisioning copies the image rootfs into
   the VM's jail; the kernel is hard-linked in (one copy, shared by inode).
 
