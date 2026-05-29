@@ -28,18 +28,17 @@ script). Tests written, **not run** — awaiting bench flip to verify.
    in `100.64.0.0/16`. ::2 → host `100.64.0.9/30`, guest `100.64.0.10/30`.
    16384 links; provably can't overflow the /16 with the mask (the `raise` is
    defensive only). No new DB field, no allocator — pure `derive_ipv4_link`.
-2. **Image name bump `ubuntu-24.04` → `ubuntu-24.04-v2`** in the e2e
-   `DEFAULT_IMAGE`. Necessary because the guest unit is baked into the rootfs
-   and `sync-image.sh` short-circuits on an existing ext4 (`:46-50`) — a reused
-   e2e droplet would otherwise test a STALE guest with no v4 lines. Images are
-   immutable by contract (changed rootfs = new name), so this is model-correct,
-   not a hack. Fixed the two other e2e literals to source the name from
-   `DEFAULT_IMAGE` (`image_sync.py:160`, exhaust row) so the bump is contained.
-3. **`atlas/bootstrap.py` left at `ubuntu-24.04`** (operator decision). It
-   targets fresh servers with no prior rootfs, so sync rebuilds regardless and
-   the new guest unit lands; the stale-rootfs hazard doesn't apply to the
-   one-shot. Trade-off: an operator who previously ran the OLD bootstrap keeps
-   the stale guest unit on that server until they sync a new image name.
+2. **Image name bump `-v2` — REVERTED at the images-tree merge.** I had bumped
+   the e2e `DEFAULT_IMAGE` name to force a rootfs rebuild (so the new guest unit
+   lands). The `images` tree (merged to main) solved this properly: `_image.py`
+   `ensure_image_row()` now delete-and-reinserts the row when any spec field
+   differs, and the cloud-image cutover changed `rootfs_filename`
+   (`ubuntu-24.04.ext4` → `ubuntu-24.04-server.ext4`) so `sync-image.sh` rebuilds
+   regardless. So the `-v2` hack is obsolete; reverted to plain `ubuntu-24.04`.
+   The two literal→`DEFAULT_IMAGE` fixes (image_sync, exhaust row) stay — still
+   correct, now resolve to `ubuntu-24.04`.
+3. **`atlas/bootstrap.py`** is owned by the images tree now (cloud-image
+   `DEFAULT_IMAGE`/`MINIMAL_IMAGE`); ipv4-egress no longer touches it.
 
 ## CTO lens — upsides / downsides
 

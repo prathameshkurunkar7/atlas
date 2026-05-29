@@ -28,7 +28,7 @@ keep it the source of truth.
 - No private networking between VMs, no overlay. No inbound IPv4 to the
   guest and no per-VM public IPv4 (outbound v4 is via host NAT44).
 - No jailer, no unprivileged user, no SELinux or AppArmor. Root everywhere.
-- No image build pipeline. We download Firecracker CI images and use them.
+- No image build pipeline. We download Ubuntu cloud images and use them.
 - No Firecracker memory-state snapshots, no live migration, no high
   availability. (Disk snapshots — a copy of the VM's rootfs — are supported;
   see [05-virtual-machine-lifecycle.md](./05-virtual-machine-lifecycle.md).)
