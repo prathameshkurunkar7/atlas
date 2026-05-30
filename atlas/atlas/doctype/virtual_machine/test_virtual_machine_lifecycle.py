@@ -131,7 +131,7 @@ class TestVirtualMachineLifecycle(IntegrationTestCase):
 			"virtual_machine": vm.name,
 			"server": vm.server,
 			"status": "Available",
-			"rootfs_path": f"/var/lib/atlas/virtual-machines/{vm.name}/snapshots/s1/rootfs.ext4",
+			"rootfs_path": "/dev/atlas/atlas-snap-s1",
 		}).insert(ignore_permissions=True)
 		task = fake_task(name="task-rebuild-snap")
 		with patch.object(module, "run_task", return_value=task) as mocked:
@@ -156,7 +156,7 @@ class TestVirtualMachineLifecycle(IntegrationTestCase):
 			"virtual_machine": other.name,
 			"server": other.server,
 			"status": "Available",
-			"rootfs_path": "/var/lib/atlas/virtual-machines/x/snapshots/s/rootfs.ext4",
+			"rootfs_path": "/dev/atlas/atlas-snap-foreign",
 		}).insert(ignore_permissions=True)
 		with self.assertRaises(frappe.ValidationError) as raised:
 			vm.rebuild("snapshot", snapshot.name)

@@ -55,15 +55,20 @@ class TestVirtualMachineSnapshot(IntegrationTestCase):
 			mocked.call_args.kwargs["variables"]["SNAPSHOT_ROOTFS_PATH"], snapshot.rootfs_path
 		)
 
-	def test_on_trash_skips_ssh_for_terminated_vm(self) -> None:
+	def test_on_trash_runs_delete_script_for_terminated_vm(self) -> None:
 		from atlas.atlas.doctype.virtual_machine_snapshot import virtual_machine_snapshot as module
 
+		# A snapshot LV lives in the thin pool, OUTSIDE the VM directory that
+		# terminate-vm.sh rm -rf'd — so it survives terminate and on_trash MUST
+		# still lvremove it, even for a Terminated VM. (The old file-backed model
+		# could skip this because the files were already gone with the directory.)
 		vm = _stopped_vm()
 		snapshot = _make_snapshot(vm)
 		vm.db_set("status", "Terminated")
-		with patch.object(module, "run_task") as mocked:
+		with patch.object(module, "run_task", return_value=fake_task()) as mocked:
 			frappe.delete_doc("Virtual Machine Snapshot", snapshot.name, ignore_permissions=True)
-		mocked.assert_not_called()
+		mocked.assert_called_once()
+		self.assertEqual(mocked.call_args.kwargs["script"], "delete-snapshot-vm.sh")
 
 	def test_clone_to_new_vm_creates_fresh_identity(self) -> None:
 		from atlas.atlas.doctype.virtual_machine import virtual_machine as vm_module

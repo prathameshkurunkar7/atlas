@@ -220,9 +220,11 @@ class VirtualMachine(Document):
 			"source_image": self.image,
 			"disk_gigabytes": self.disk_gigabytes,
 		}).insert(ignore_permissions=True)
-		rootfs_path = (
-			f"/var/lib/atlas/virtual-machines/{self.name}/snapshots/{snapshot.name}/rootfs.ext4"
-		)
+		# The snapshot is an LVM thin snapshot, not a file copy. rootfs_path holds
+		# its LV device path (derived from the snapshot's UUID, like the VM disk
+		# LV) — no schema change, and it flows unchanged into restore/clone, which
+		# read the LV name back from this path.
+		rootfs_path = f"/dev/atlas/atlas-snap-{snapshot.name}"
 		task = run_task(
 			server=self.server,
 			script="snapshot-vm.sh",
@@ -361,10 +363,11 @@ class VirtualMachine(Document):
 		return task.name
 
 	def _delete_snapshots(self) -> None:
-		"""Drop this VM's snapshot rows after terminate. terminate-vm.sh
-		rm -rf'd the VM directory (snapshots included), so the rows point at
-		files that no longer exist. on_trash skips the SSH cleanup for a
-		Terminated VM, so this is a pure row delete."""
+		"""Drop this VM's snapshot rows after terminate. Each row's on_trash
+		lvremoves its snapshot LV — snapshot LVs live in the thin pool, OUTSIDE
+		the VM directory terminate-vm.sh rm -rf'd, so they survive that and must
+		be removed via the per-snapshot delete path (one SSH round trip each;
+		the script is idempotent)."""
 		for name in frappe.get_all(
 			"Virtual Machine Snapshot", filters={"virtual_machine": self.name}, pluck="name"
 		):

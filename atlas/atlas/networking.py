@@ -148,9 +148,10 @@ def cgroup_args(vcpus: int, memory_megabytes: int, disk_gigabytes: int) -> list[
 	- `cpu.max` = `<vcpus * period> <period>` — `vcpus` cores' worth of CPU
 	  bandwidth per 100 ms period (bandwidth cap, not cpuset pinning).
 
-	`disk_gigabytes` is unused here (disk is bounded via the `fsize` rlimit, see
-	`resource_limit_args`) but kept in the signature so the one call site passes
-	the VM's full resource triple.
+	`disk_gigabytes` is unused here — the VM disk is a thin LV bounded by
+	pool-space accounting (the pool's `data_percent`, monitored at the host),
+	not by any per-process limit. It is kept in the signature so the one call
+	site passes the VM's full resource triple.
 	"""
 	_ = disk_gigabytes
 	period_us = 100000
@@ -167,17 +168,20 @@ def cgroup_args(vcpus: int, memory_megabytes: int, disk_gigabytes: int) -> list[
 
 
 def resource_limit_args(disk_gigabytes: int) -> list[str]:
-	"""Jailer `--resource-limit` flags (setrlimit) bounding fds and file size.
+	"""Jailer `--resource-limit` flags (setrlimit) bounding open files.
 
-	`fsize` caps any single file the jailed process can create at the VM's disk
-	size plus 1 GiB of slack (the rootfs is already that large; the slack covers
-	the API socket, logs, and Firecracker's own scratch without letting a runaway
-	fill the host). `no-file` bounds the descriptor count.
+	The VM disk is an LVM thin volume (a block device), not a file the jailed
+	process creates, so `RLIMIT_FSIZE` would not bound it — `fsize` only caps
+	regular-file growth, and writes to a block device are not regular-file
+	growth. We omit it: pool-space accounting (the thin pool's `data_percent`,
+	monitored at the host) is the real disk-runaway guard, not a per-process
+	file-size rlimit. `no-file` still bounds the descriptor count.
+
+	`disk_gigabytes` is unused now (kept in the signature so the one call site
+	passes the VM's full resource triple, matching `cgroup_args`).
 	"""
-	fsize_bytes = (disk_gigabytes + 1) * 1024 * 1024 * 1024
+	_ = disk_gigabytes
 	return [
-		"--resource-limit",
-		f"fsize={fsize_bytes}",
 		"--resource-limit",
 		f"no-file={MAX_OPEN_FILES}",
 	]

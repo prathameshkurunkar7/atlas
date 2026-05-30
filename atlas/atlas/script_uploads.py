@@ -14,12 +14,24 @@ remote_absolute).
 # land in the staging directory next to them.
 _PREPARE_ROOTFS = ("scripts/lib/prepare-rootfs.sh", "/tmp/atlas/prepare-rootfs.sh")
 
+# lvm.sh is the sourced LVM thin-pool helper library, same staging contract as
+# prepare-rootfs.sh. Every script that creates, exposes, or removes a per-VM
+# disk LV sources it by relative path, so it lands next to each caller. (The
+# bootstrap also needs it, but bootstrap's helpers are durable state placed by
+# Server.bootstrap() directly, not through this map — see the module docstring.)
+_LVM = ("scripts/lib/lvm.sh", "/tmp/atlas/lvm.sh")
+
 SCRIPT_UPLOADS: dict[str, list[tuple[str, str]]] = {
 	"sync-image.sh": [
 		("scripts/guest/atlas-network.service", "/tmp/atlas/atlas-network.service"),
+		_LVM,
 	],
-	"provision-vm.sh": [_PREPARE_ROOTFS],
-	"rebuild-vm.sh": [_PREPARE_ROOTFS],
+	"provision-vm.sh": [_PREPARE_ROOTFS, _LVM],
+	"rebuild-vm.sh": [_PREPARE_ROOTFS, _LVM],
+	"snapshot-vm.sh": [_LVM],
+	"delete-snapshot-vm.sh": [_LVM],
+	"resize-vm.sh": [_LVM],
+	"terminate-vm.sh": [_LVM],
 }
 
 

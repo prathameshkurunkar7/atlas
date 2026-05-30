@@ -27,7 +27,17 @@ class Server(Document):
 	BOOTSTRAP_UPLOAD_SOURCES: ClassVar[list[tuple[str, str]]] = [
 		("vm-network-up.sh", "/var/lib/atlas/bin/vm-network-up.sh"),
 		("vm-network-down.sh", "/var/lib/atlas/bin/vm-network-down.sh"),
+		# vm-disk-up.sh re-activates the VM's thin-snapshot disk LV and refreshes
+		# its in-jail block node at every unit start — the disk analogue of
+		# vm-network-up.sh, so an enabled VM self-heals its disk after a reboot.
+		("vm-disk-up.sh", "/var/lib/atlas/bin/vm-disk-up.sh"),
+		# lvm.sh is the durable copy of the thin-pool helper library. It lands in
+		# /var/lib/atlas/bin/ so atlas-pool.service can source it to re-assert the
+		# pool's loop device after a reboot (bootstrap is not re-run on boot).
+		# Per-VM lifecycle scripts get their own staged copy via script_uploads.py.
+		("lib/lvm.sh", "/var/lib/atlas/bin/lvm.sh"),
 		("systemd/firecracker-vm@.service", "/etc/systemd/system/firecracker-vm@.service"),
+		("systemd/atlas-pool.service", "/etc/systemd/system/atlas-pool.service"),
 	]
 
 	def autoname(self) -> None:

@@ -13,18 +13,25 @@
 
 set -euo pipefail
 
+# shellcheck source=lib/lvm.sh
+. "$(dirname "$0")/lvm.sh"
+
 : "${VIRTUAL_MACHINE_NAME:?required}"
 : "${VCPUS:?required}"
 : "${MEMORY_MB:?required}"
 : "${DISK_GB:?required}"
 
-# Config and rootfs live inside the VM's jail (built at provision time).
+# Config lives inside the VM's jail; the disk is the VM's LV.
 jail_root="/var/lib/atlas/virtual-machines/${VIRTUAL_MACHINE_NAME}/jail/firecracker/${VIRTUAL_MACHINE_NAME}/root"
 config_path="${jail_root}/firecracker.json"
-rootfs_path="${jail_root}/rootfs.ext4"
+vm_lv_name="$(atlas_vm_lv_name "$VIRTUAL_MACHINE_NAME")"
 
 if [ ! -f "$config_path" ]; then
     echo "firecracker config ${config_path} missing; provision the VM first" >&2
+    exit 1
+fi
+if ! atlas_lv_exists "$vm_lv_name"; then
+    echo "disk LV ${vm_lv_name} missing; provision the VM first" >&2
     exit 1
 fi
 
@@ -40,11 +47,10 @@ sudo jq \
 sudo chown --reference="$config_path" "${config_path}.new"
 sudo mv "${config_path}.new" "$config_path"
 
-# 2. Grow the rootfs to DISK_GB. truncate only ever extends here (shrink is
-#    rejected upstream); resize2fs then fills the larger device. No-op if the
-#    filesystem already spans the device.
-sudo truncate -s "${DISK_GB}G" "$rootfs_path"
-sudo e2fsck -fy "$rootfs_path" >/dev/null 2>&1 || true
-sudo resize2fs "$rootfs_path" >/dev/null
+# 2. Grow the disk LV to DISK_GB. lvextend -r extends the LV and the ext4 on it
+#    in one shot. Disk only ever grows (shrink is rejected upstream); lvextend
+#    refuses to shrink and is a clean no-op when the LV already meets the size,
+#    so a re-run (or a resize that only changed vCPU/memory) does not error.
+sudo lvextend -r -L "${DISK_GB}G" "$(atlas_lv_path "$vm_lv_name")" >/dev/null 2>&1 || true
 
 echo "Resized ${VIRTUAL_MACHINE_NAME}: ${VCPUS} vCPU, ${MEMORY_MB} MB, ${DISK_GB} GB."

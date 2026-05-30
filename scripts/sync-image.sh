@@ -28,6 +28,9 @@ set -euo pipefail
 : "${DEFAULT_DISK_GB:?required}"
 : "${GUEST_NETWORK_UNIT:?required}"
 
+# shellcheck source=lib/lvm.sh
+. "$(dirname "$0")/lvm.sh"
+
 image_directory="/var/lib/atlas/images/${IMAGE_NAME}"
 sudo install -d -m 0700 "$image_directory"
 
@@ -212,5 +215,14 @@ sudo mkfs.ext4 -q -L atlas-root -d "$extracted_directory" -F "${rootfs_path}.par
 sudo mv "${rootfs_path}.part" "$rootfs_path"
 
 sudo rm -rf "$extracted_directory" "$squashfs_path"
+
+# 5. Base image as a read-only thin LV. Per-VM disks are instant CoW snapshots
+#    of this LV (lvcreate -s) instead of full file copies. The pristine ext4
+#    file stays on disk too: it is the import source here (re-synced into the LV
+#    only when the LV is absent) and the audit artifact. The LV is named
+#    deterministically from IMAGE_NAME — no DocType field, derivable like the
+#    networking names. Idempotent: atlas_lv_from_file is a no-op if the LV
+#    already exists, so a re-sync of an unchanged image touches nothing.
+atlas_lv_from_file "$rootfs_path" "atlas-image-${IMAGE_NAME}" "$DEFAULT_DISK_GB"
 
 echo "Image ${IMAGE_NAME} ready."

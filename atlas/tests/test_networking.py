@@ -193,15 +193,19 @@ class TestNetworking(IntegrationTestCase):
 			],
 		)
 
-	def test_resource_limit_args_caps_fsize_to_disk_plus_slack(self) -> None:
+	def test_resource_limit_args_omits_fsize_for_lv_disk(self) -> None:
+		# The VM disk is an LVM thin volume (a block device), not a regular file
+		# the jailed process grows, so RLIMIT_FSIZE would not bound it — fsize is
+		# omitted and only no-file remains. Pool-space accounting is the disk
+		# guard. The disk arg is accepted but unused (signature parity with
+		# cgroup_args).
 		args = resource_limit_args(disk_gigabytes=8)
-		expected_fsize = (8 + 1) * 1024 * 1024 * 1024
 		self.assertEqual(
 			args,
 			[
 				"--resource-limit",
-				f"fsize={expected_fsize}",
-				"--resource-limit",
 				f"no-file={MAX_OPEN_FILES}",
 			],
 		)
+		self.assertNotIn("--resource-limit\nfsize", "\n".join(args))
+		self.assertFalse(any(a.startswith("fsize=") for a in args))

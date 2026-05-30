@@ -171,27 +171,57 @@ We could pre-build ext4 images on our own bucket. We don't, because:
 
 When we add custom images (extra packages, custom users), we'll revisit.
 
+### Base image as a read-only thin LV
+
+After the pristine ext4 file is built, `sync-image.sh` also imports it into a
+**read-only LVM thin volume** named `atlas-image-<image_name>` (in the `atlas`
+volume group on thin pool `pool0`): a thin LV of `DEFAULT_DISK_GB` is created,
+the ext4 bytes are `dd`'d in, and the LV is flipped read-only (`lvchange
+--permission r`). The LV is sized to the full disk so its free space lands in
+the base and every per-VM snapshot inherits it without a per-VM `lvextend`.
+
+This is what makes per-VM disk creation **instant**: instead of copying the
+whole ext4, `provision-vm.sh` takes a CoW thin snapshot of this base LV
+(`lvcreate -s`), which shares all unwritten base blocks (see
+[05-virtual-machine-lifecycle.md](./05-virtual-machine-lifecycle.md) and
+[07-filesystem-layout.md](./07-filesystem-layout.md)). The on-disk ext4 file
+is kept too — it is the import source (re-`dd`'d into the LV only if the LV is
+absent, so a re-sync of an unchanged image is a no-op) and the audit artifact.
+The LV name is derived from `image_name`, so there is no DocType field for it.
+
 ## Per-VM rootfs creation
 
 When `provision-vm.sh` runs, it:
 
-1. Copies the pristine ext4 into the VM directory.
-2. `truncate -s <disk_gigabytes>G` to grow the file.
-3. `e2fsck -fy` + `resize2fs` to extend the filesystem.
-4. `mount -o loop` to write `/root/.ssh/authorized_keys`,
-   `/etc/atlas-network.env`, `/etc/hostname` + a matching `127.0.1.1`
-   line in `/etc/hosts`, a 512 MiB `/swapfile` (referenced by the
-   fstab installed at image-sync time), fresh `/etc/ssh/ssh_host_*`
-   keypairs (`ssh-keygen` on the host writes directly into the
-   mounted rootfs), and a derived `/etc/machine-id`. The
-   `atlas-network.service` is already in the pristine image and
-   already wanted by `multi-user.target`, so we don't need to touch
-   systemd inside the rootfs.
+1. Creates the VM's disk LV `atlas-vm-<uuid>` as an **instant CoW thin
+   snapshot** (`lvcreate -s`) of the origin LV — the base image LV
+   `atlas-image-<image>` normally, or a snapshot LV when cloning. No full
+   copy: unwritten blocks are shared with the origin.
+2. `lvextend -r` to `<disk_gigabytes>G` if the VM's disk is larger than the
+   origin (one shot — grows the LV and the ext4 on it together).
+3. `e2fsck -fy`, then `tune2fs -U random -L atlas-root` to give this disk a
+   distinct ext4 UUID. A CoW snapshot inherits the origin's ext4 UUID;
+   `mount -o nouuid` is XFS-only (not ext4), so without this the host's
+   `blkid` would see duplicate UUIDs. The guest mounts `root=/dev/vda`, so it
+   is UUID-agnostic — this is purely host-side hygiene, done while unmounted.
+4. `mount` the LV **device** (no `-o loop` — it is a real block device) to
+   write `/root/.ssh/authorized_keys`, `/etc/atlas-network.env`,
+   `/etc/hostname` + a matching `127.0.1.1` line in `/etc/hosts`, a 512 MiB
+   `/swapfile` (referenced by the fstab installed at image-sync time), fresh
+   `/etc/ssh/ssh_host_*` keypairs, and a derived `/etc/machine-id`. The
+   `atlas-network.service` is already in the pristine image and already wanted
+   by `multi-user.target`, so we don't touch systemd inside the rootfs.
 5. `umount`.
+6. `mknod` the LV's block device into the jail as `rootfs.ext4`, owned by the
+   per-VM uid (`0660`), so the chrooted, de-privileged Firecracker can open it
+   via pure DAC. `firecracker.json`'s jail-relative `path_on_host:
+   "rootfs.ext4"` is unchanged — it is now a block node rather than a file.
+   See [07-filesystem-layout.md](./07-filesystem-layout.md) for the LVM ×
+   jailer details.
 
 This means a freshly booted VM comes up with the right IPv6, the right SSH
-key, and a working internet route within ~2 seconds of `systemctl
-start`.
+key, and a working internet route within ~2 seconds of `systemctl start` —
+and disk creation is **instant** (a CoW snapshot, not a multi-second copy).
 
 ## Verification
 

@@ -54,21 +54,21 @@ class VirtualMachineSnapshot(Document):
 		return virtual_machine.rebuild("snapshot", self.name)
 
 	def on_trash(self) -> None:
-		"""Delete the on-host snapshot files when the row is deleted.
+		"""Remove the on-host snapshot LV when the row is deleted.
 
-		The snapshot rootfs is the only thing this row points at; once the
-		row is gone the files are dead weight. We delete them in the same
-		gesture so the disk doesn't accumulate orphans. Idempotent script —
-		a missing directory is a no-op. A Terminated VM whose directory is
-		already gone (terminate-vm.sh rm -rf'd it) still trashes cleanly."""
+		The snapshot LV is the only thing this row points at; once the row is
+		gone the LV is dead weight. We remove it in the same gesture so the pool
+		doesn't accumulate orphans. Idempotent script — a missing LV is a no-op.
+
+		Unlike the old file-backed snapshots (which lived under the VM directory
+		and were swept by terminate-vm.sh's `rm -rf`), a snapshot LV lives in the
+		thin pool, OUTSIDE the VM directory — so it survives terminate's directory
+		removal and MUST be lvremoved here even when terminate() cascades the row
+		deletions of a Terminated VM. (No Terminated short-circuit: that would
+		leak the snapshot LV.)"""
 		if not self.server or not self.rootfs_path:
 			return
 		if not frappe.db.exists("Server", self.server):
-			return
-		# A Terminated VM had its whole directory rm -rf'd by terminate-vm.sh,
-		# so the snapshot files are already gone — skip the redundant SSH round
-		# trip when terminate() cascades the row deletions.
-		if frappe.db.get_value("Virtual Machine", self.virtual_machine, "status") == "Terminated":
 			return
 		run_task(
 			server=self.server,

@@ -134,9 +134,15 @@ behavior; they just keep doors open.
   - **New PID namespace per VM** (`--new-pid-ns`), **custom seccomp filters**,
     and **block/net rate limiters** — extra isolation/tuning knobs on top of the
     jailer + Firecracker defaults. Additive.
-  - **Existing-VM migration.** VMs provisioned before this change keep their old
-    non-jailed unit and flat (non-jail) paths until re-provisioned; they are not
-    retro-jailed. Terminate + reprovision to adopt the jail.
+  - **Existing-VM migration.** VMs provisioned before the jailer change keep
+    their old non-jailed unit and flat (non-jail) paths until re-provisioned;
+    they are not retro-jailed. The same applies to the **LVM disk swap**: a VM
+    whose disk is still a `cp`-copied `rootfs.ext4` *file* is not converted to a
+    thin LV in place — the swap is a hard replacement of the disk primitive, not
+    a parallel backend. Terminate + re-provision to adopt the jail and the thin
+    LV. (On this branch there is no production fleet and the e2e server is
+    recreated per run, so nothing is silently broken; this note is for a future
+    upgrade of a live host.)
 
 - **More host hardening, deferred from the host-hardening iteration**:
   `/tmp` and `/dev/shm` mount options (`nodev,nosuid,noexec` — CIS 1.1.2.x,
@@ -174,12 +180,30 @@ behavior; they just keep doors open.
   Dockerfile or debootstrap recipe, push to a bucket, point the image
   record at it. Additive.
 
-- **Overlayfs-backed rootfs**: shrink per-VM disk by ~10×. Internal to
-  `provision-vm.sh` and `terminate-vm.sh`. Additive.
+- **LVM thin-pool disks** — *done (v0.6)*. Per-VM disks are LVM thin snapshots
+  of a read-only base image LV (`lvcreate -s`), so provisioning and snapshots are
+  instant CoW operations sharing blocks until written — the density win the old
+  "overlayfs-backed rootfs" item was after, without a doc-type change (LV names
+  derive from UUIDs). See [07-filesystem-layout.md § Why LVM thin volumes](./07-filesystem-layout.md#why-lvm-thin-volumes-for-per-vm-disks).
+  Still deferred here:
+  - **Real attached block-device PV.** The pool sits on a sparse loopback file
+    (`pool/atlas-pool.img`) on the root disk because a stock DO droplet has no
+    spare block device. A provider that attaches a dedicated volume (DO Block
+    Storage, an extra disk) should back the PV with that device instead — a
+    one-line change to the `loop_device` assignment in `atlas_pool_ensure`.
+  - **Migration via `thin_delta`.** Thin metadata makes an *incremental* disk
+    transfer possible (send only changed blocks between two snapshots), the fast
+    slice the cross-server-snapshot item below now depends on.
+  - **Pool autoscale / quota / GC / drift reconciler.** The pool over-commits;
+    today the only guard is the ≥90% `data_percent`/`metadata_percent` pre-flight
+    in `snapshot-vm.sh`. Autogrowing the pool, per-server/per-team quotas, a
+    snapshot reaper, and a reconciler that drops orphan LVs (LV with no matching
+    DB row, or vice versa) all belong here before real load.
 
-- **Snapshots** — *done (disk-only)*. Implemented as a copy of the VM's
-  `rootfs.ext4` into a `Virtual Machine Snapshot` DocType, with
-  restore/rebuild, clone, resize and pause/resume alongside. See
+- **Snapshots** — *done (disk-only)*. Implemented as an instant CoW thin
+  snapshot LV (`atlas-snap-<uuid>`, `lvcreate -s` of the VM's disk LV) tracked by
+  a `Virtual Machine Snapshot` DocType, with restore/rebuild, clone, resize and
+  pause/resume alongside. See
   [05-virtual-machine-lifecycle.md](./05-virtual-machine-lifecycle.md) and
   [02-doctypes.md § Virtual Machine Snapshot](./02-doctypes.md#virtual-machine-snapshot).
   Still deferred here:
@@ -190,9 +214,10 @@ behavior; they just keep doors open.
     VM's lifetime, and a guest-side identity-rotation story for the
     duplicate-state hazard. Out of scope until there's a concrete need.
   - **Snapshot retention / GC / quotas.** Today snapshots are created and
-    deleted by hand, guarded only by a `df` pre-flight in `snapshot-vm.sh`.
-    A scheduled reaper and per-server disk quotas belong here before any
-    real load.
+    deleted by hand, guarded only by the ≥90% pool-space (`data_percent`/
+    `metadata_percent`) pre-flight in `snapshot-vm.sh`. A scheduled reaper and
+    per-server/per-team pool quotas belong here before any real load (see the
+    pool autoscale/quota/GC item under **LVM thin-pool disks** above).
   - **Cross-server snapshots.** A snapshot lives on its VM's server; clone and
     restore target the same server. Moving a snapshot to another host (for
     rebalancing or as an image-build input) is additive but unbuilt.
@@ -201,22 +226,24 @@ behavior; they just keep doors open.
     (identical CPU model / host-kernel / GIC version — see
     [snapshot-support.md § "Where can I resume my snapshots?"](../../references/firecracker/docs/snapshotting/snapshot-support.md)).
     Those constraints bind only the serialized *memory-state* snapshot, which we
-    deliberately do not use; a disk snapshot is a plain `rootfs.ext4` file and is
-    portable. The real blockers are Atlas-side and mundane:
-    - **Structural.** Snapshots are children of one VM's UUID directory and die
-      with it (`on_trash`, terminate `rm -rf`); the DocType hard-binds
-      `virtual_machine` (`set_only_once`) and a read-only denormalized `server`.
-      A transferable snapshot needs a host-independent store and a mutable
-      location — a DocType + on-disk-layout change. Largest piece.
+    deliberately do not use; a disk snapshot is a thin LV whose blocks can be
+    streamed to another host (`dd`, or incrementally via `thin_delta`). The real
+    blockers are Atlas-side and mundane:
+    - **Structural.** A snapshot LV lives in one server's pool and the DocType
+      hard-binds `virtual_machine` (`set_only_once`) and a read-only denormalized
+      `server`. A transferable snapshot needs a host-independent store and a
+      mutable location — a DocType change plus the host→host LV-stream path.
+      Largest piece. (The LV is no longer trapped under the VM's directory, so
+      the old "dies with the VM dir" coupling is already gone.)
     - **Kernel pairing.** A disk snapshot carries no kernel; clone/restore take
       it from `source_image`. The target host must already have the matching
       `Virtual Machine Image` synced (reuse the `provision-vm.sh` step-0
       image-present precondition).
-    - **Transfer cost.** We use plain `cp` (no overlayfs/CoW/reflink; ext4 has
-      no CoW), so a transfer is a full N-GB stream. The naive slice (`cp`/rsync
-      over SSH, full copy, fail-loud) is in-grain; the fast slice (incremental /
-      thin-pool send) depends on the **overlayfs-backed rootfs** item above or
-      the **LVM thin-pool** backlog idea.
+    - **Transfer cost.** The naive slice is a full N-GB block stream (`dd` of the
+      snapshot LV over SSH, fail-loud) and is in-grain. The fast slice — send only
+      the blocks that differ between two thin snapshots — is unlocked by the
+      **migration via `thin_delta`** item under **LVM thin-pool disks** above,
+      now that disks are thin LVs rather than independent file copies.
     - **Trust boundary.** Firecracker trusts snapshot files and does only a CRC;
       moving bytes host→host is exactly where it says auth + encryption are
       required. Atlas has no host↔host trust (each host trusts only Atlas) and no
@@ -286,3 +313,16 @@ behavior; they just keep doors open.
   documented (forwarding stays on — for both v4 and v6 — `squashfs` kept, and
   `PermitRootLogin prohibit-password`). Atlas still operates as root; the
   unprivileged-user + jailer + AppArmor privilege-drop remains deferred.
+- `v0.6` — **LVM thin-pool disks.** Per-VM disks moved from a full `cp` of the
+  image rootfs to an instant copy-on-write LVM thin snapshot of a read-only base
+  image LV; disk snapshots became thin snapshot LVs too. Bootstrap creates the
+  `atlas` VG + `pool0` thin pool on a sparse loopback PV (with reboot survival via
+  `atlas-pool.service`); sync imports each base image as a read-only thin LV;
+  provision/clone/rebuild `lvcreate -s` off it and `mknod` the LV's block node
+  into the jailer chroot (per-VM uid, pure DAC — verified on a real host:
+  `DevicePolicy=auto`, no `DeviceAllow`); resize is `lvextend -r`; terminate /
+  delete-snapshot `lvremove` (guarded against pool/base LVs). No DocType/schema
+  change — LV names derive from UUIDs (`atlas-vm-<uuid>`, `atlas-snap-<uuid>`,
+  `atlas-image-<image>`). Verified end-to-end on a DO droplet: a jailed,
+  chrooted, de-privileged Firecracker boots off a thin LV. See
+  [07-filesystem-layout.md § Why LVM thin volumes](./07-filesystem-layout.md#why-lvm-thin-volumes-for-per-vm-disks).

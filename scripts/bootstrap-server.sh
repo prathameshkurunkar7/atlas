@@ -58,8 +58,10 @@ sudo apt-get -o DPkg::Lock::Timeout=300 install -y \
     e2fsprogs \
     iproute2 \
     jq \
+    lvm2 \
     nftables \
-    squashfs-tools
+    squashfs-tools \
+    thin-provisioning-tools
 
 # 3. Install Firecracker + jailer binaries. Both ship in the same release
 #    tarball; production runs every VM under the jailer (de-privileged, chrooted,
@@ -130,8 +132,8 @@ net.ipv4.tcp_syncookies = 1
 net.ipv6.conf.all.accept_ra = 0
 net.ipv6.conf.default.accept_ra = 0
 # NOTE: rp_filter (CIS 3.3.7) is intentionally omitted — strict reverse-path
-# filtering can drop the asymmetric traffic of the routed-tap topology. It is
-# gated on a live-bench check before being added (see llm/state/plan.md).
+# filtering can drop the asymmetric traffic of the routed-tap topology. Add it
+# only after confirming on a live bench that egress/ingress paths survive it.
 CONF
 sudo sysctl --system >/dev/null
 
@@ -257,6 +259,22 @@ sudo install -d -m 0755 /var/lib/atlas/bin
 #     directly via ExecStartPost / ExecStopPost.
 sudo chmod 0755 /var/lib/atlas/bin/*.sh
 sudo systemctl daemon-reload
+
+# 11a. LVM thin pool for VM disks. Per-VM disks are thin CoW snapshots of a
+#      read-only base image LV instead of full file copies. The pool sits on a
+#      loopback PV (a sparse backing file on the root fs) because a stock DO
+#      droplet has no spare block device; the real-attached-device PV is the
+#      documented spec/09 follow-on. dm_thin_pool is the kernel target the pool
+#      runs on; load it now and persist it for reboots. The 60-atlas-blocklist
+#      (step 6) targets unused fs/net modules only and never touches dm_*, so
+#      this is unaffected. atlas_pool_ensure (idempotent) does the loop/pv/vg/
+#      pool work; atlas-pool.service re-asserts the loop binding after a reboot
+#      since bootstrap is not re-run on boot.
+sudo modprobe dm_thin_pool
+echo dm_thin_pool | sudo install -m 0644 /dev/stdin /etc/modules-load.d/60-atlas-lvm.conf
+. /var/lib/atlas/bin/lvm.sh
+atlas_pool_ensure
+sudo systemctl enable atlas-pool.service >/dev/null 2>&1
 
 # 12. Record state for Atlas to pick up. Single JSON file is the canonical
 #     source of truth; the trailing `cat` keeps the same bytes on stdout so

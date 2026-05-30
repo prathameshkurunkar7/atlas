@@ -154,6 +154,18 @@ def _check_provision_happy_path(server_name: str, image: str, public_key: str) -
 		ATLAS_NETNS=derive_netns(vm.name),
 	)
 
+	# Storage contract: the disk is an LVM thin volume (an instant CoW snapshot
+	# of the base image LV, no full copy), exposed into the jail as a
+	# block-special node owned by the per-VM uid — not a file. Together with
+	# phase-jailed.sh + phase5-guest-identity.sh this is the first-flip proof: a
+	# de-privileged, chrooted Firecracker booted off a thin LV.
+	assert_probe(
+		server_name,
+		"phase-vm-disk-is-lv.sh",
+		VIRTUAL_MACHINE_NAME=vm.name,
+		ATLAS_FC_UID=str(derive_uid(vm.name)),
+	)
+
 	# Phase 3 contract: the SSH key lives on disk (Atlas Settings
 	# .ssh_private_key_path), not in the DB. Before SSHing into the guest,
 	# assert the path the controller will read is present and 0600 —

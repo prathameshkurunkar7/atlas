@@ -48,6 +48,8 @@ set -euo pipefail
 : "${ATLAS_CGROUP_ARGS:?required}"
 : "${ATLAS_RESOURCE_ARGS:?required}"
 
+# shellcheck source=lib/lvm.sh
+. "$(dirname "$0")/lvm.sh"
 # shellcheck source=lib/prepare-rootfs.sh
 . "$(dirname "$0")/prepare-rootfs.sh"
 
@@ -89,22 +91,35 @@ sudo install -d -m 0700 "${vm_directory}/log"
 sudo install -d -m 0700 "${jail_root}"
 sudo install -d -m 0700 "${jail_root}/run"
 
-# 1. Per-VM rootfs inside the jail. The bytes come from a snapshot copy (clone)
-#    when SNAPSHOT_ROOTFS_PATH is set, otherwise from the pristine image. Either
-#    way the per-VM identity injected in step 2 is freshly derived from THIS VM's
-#    UUID, so a clone never shares host keys or machine-id with its source.
-rootfs_path="${jail_root}/rootfs.ext4"
-source_rootfs="${SNAPSHOT_ROOTFS_PATH:-${image_directory}/${ROOTFS_FILENAME}}"
-if [ -n "${SNAPSHOT_ROOTFS_PATH:-}" ] && [ ! -f "$SNAPSHOT_ROOTFS_PATH" ]; then
-    echo "snapshot rootfs not found: ${SNAPSHOT_ROOTFS_PATH}" >&2
-    exit 1
+# 1. Per-VM disk LV. An instant CoW thin snapshot of an origin LV — the
+#    pristine image's base LV normally, or a snapshot LV when cloning
+#    (SNAPSHOT_ROOTFS_PATH is that snapshot's /dev/atlas/<name> device path).
+#    No full copy: unwritten blocks are shared with the origin. The per-VM
+#    identity injected in step 2 is freshly derived from THIS VM's UUID, so a
+#    clone never shares host keys or machine-id with its source.
+vm_lv_name="$(atlas_vm_lv_name "$VIRTUAL_MACHINE_NAME")"
+if [ -n "${SNAPSHOT_ROOTFS_PATH:-}" ]; then
+    origin_lv_name="$(atlas_lv_name_from_path "$SNAPSHOT_ROOTFS_PATH")"
+    if ! atlas_lv_exists "$origin_lv_name"; then
+        echo "snapshot LV not found: ${origin_lv_name} (from ${SNAPSHOT_ROOTFS_PATH})" >&2
+        exit 1
+    fi
+else
+    origin_lv_name="$(atlas_image_lv_name "$IMAGE_NAME")"
+    if ! atlas_lv_exists "$origin_lv_name"; then
+        echo "base image LV not found: ${origin_lv_name}; run Sync to Server first" >&2
+        exit 1
+    fi
 fi
-atlas_copy_rootfs "$source_rootfs" "$rootfs_path" "$DISK_GB"
+atlas_prepare_lv "$origin_lv_name" "$vm_lv_name" "$DISK_GB"
+rootfs_device="$(atlas_lv_path "$vm_lv_name")"
 
 # 2. Inject this VM's identity (SSH key, network env, hostname, swap, host
-#    keys, machine-id) into the rootfs. The v4 egress link goes into the
-#    guest's network env here too, so clone/rebuild get it for free.
-atlas_inject_identity "$rootfs_path" "$VIRTUAL_MACHINE_NAME" "$VIRTUAL_MACHINE_IPV6" \
+#    keys, machine-id) into the disk. Mounts the LV device directly (no loop).
+#    The v4 egress link goes into the guest's network env here too, so
+#    clone/rebuild get it for free. Done outside the jail, before the jailer
+#    starts.
+atlas_inject_identity "$rootfs_device" "$VIRTUAL_MACHINE_NAME" "$VIRTUAL_MACHINE_IPV6" \
     "$SSH_PUBLIC_KEY" "$IPV4_GUEST_CIDR" "$IPV4_GATEWAY"
 
 # 3. Kernel inside the jail. Hard-link (not copy) the immutable image kernel so
@@ -143,10 +158,20 @@ sudo install -m 0644 /dev/stdin "${jail_root}/firecracker.json" <<EOF
 }
 EOF
 
+# 4b. Expose the disk LV inside the jail as a block-special node at
+#     rootfs.ext4. firecracker.json's jail-relative `path_on_host: "rootfs.ext4"`
+#     (step 4) resolves to this node post-chroot — FC opens it as a plain block
+#     device, no config change from the file-backed era. The node is owned by the
+#     per-VM uid (chmod 0660); device access is pure DAC. The jailer never
+#     deletes existing nodes, so it survives every (re)start.
+atlas_lv_mknod_into_jail "$vm_lv_name" "${jail_root}/rootfs.ext4" "$ATLAS_FC_UID"
+
 # 5. Hand the jail tree to the per-VM uid/gid. The jailer also chowns the jail
 #    root and the device nodes it creates, but the backing files we laid down
-#    (rootfs RW, kernel RO, config) must be owned by the uid too. Do this last,
-#    after every file is in place.
+#    (kernel RO, config) must be owned by the uid too. The recursive chown
+#    re-touches the rootfs.ext4 block node's inode (already uid-owned from step
+#    4b) — correct and harmless; it chowns the node, not the LV it points at.
+#    Do this last, after every file is in place.
 sudo chown -R "${ATLAS_FC_UID}:${ATLAS_FC_UID}" "${vm_directory}/jail"
 
 # 6. Sidecar that vm-network-up.sh reads. Stable across host reboots — carries
@@ -160,6 +185,7 @@ HOST_VETH=${HOST_VETH}
 NAMESPACE_VETH=${NAMESPACE_VETH}
 IPV4_HOST_CIDR=${IPV4_HOST_CIDR}
 IPV4_GUEST_CIDR=${IPV4_GUEST_CIDR}
+ATLAS_FC_UID=${ATLAS_FC_UID}
 EOF
 
 # 7. Per-VM launcher the systemd unit execs. We build the jailer command line

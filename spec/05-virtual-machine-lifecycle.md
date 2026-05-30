@@ -7,16 +7,16 @@ idempotent shell script.
 
 Two design rules keep this set small and safe:
 
-- **Snapshots are disk-only.** A snapshot is a copy of the VM's
-  `rootfs.ext4` — not a Firecracker memory-state snapshot. We never call
+- **Snapshots are disk-only.** A snapshot is an LVM thin CoW snapshot of the
+  VM's disk LV — not a Firecracker memory-state snapshot. We never call
   Firecracker's `/snapshot/create` or `/snapshot/load`. This dodges the
   pre-boot-only load path (which can't coexist with our `--config-file`
   boot), the RAM-sized memory file, and the duplicate-identity hazard the
   [Firecracker docs](../../references/firecracker/docs/snapshotting/snapshot-support.md)
   call insecure. The boot path and the systemd unit are unchanged.
-- **Disk operations require the VM to be Stopped.** Copying or replacing a
-  mounted ext4 risks a torn filesystem; a cleanly unmounted rootfs is
-  consistent. Firecracker also can't change vCPU/RAM on a running VM
+- **Disk operations require the VM to be Stopped.** A thin snapshot of (or a
+  replacement under) an ext4 the guest still has mounted captures a torn,
+  mid-write filesystem; a cleanly unmounted disk LV is consistent. Firecracker also can't change vCPU/RAM on a running VM
   (`/machine-config` is pre-boot only), so resize is stop-required too. The
   desk surfaces these actions only while Stopped; the controllers enforce
   it.
@@ -82,8 +82,10 @@ is still active. It is reached only from `Running` and leaves to `Running`
 (resume) or `Stopped` (stop = full shutdown).
 
 `Terminated` is terminal. The doc stays in the table forever for history;
-terminating a VM also deletes its snapshot rows (their on-host files went with
-the VM directory).
+terminating a VM also deletes its snapshot rows. Each snapshot row's `on_trash`
+lvremoves its snapshot LV — snapshot LVs live in the thin pool, outside the VM
+directory, so they survive `terminate-vm.sh`'s `rm -rf` and must be removed
+explicitly (one Task each).
 
 ## Provision
 
@@ -112,7 +114,8 @@ Steps in Python (one DocType method, `Virtual Machine.provision`):
    server; if not, it exits non-zero with a clear error pointing the operator
    at the **Sync to Server** action. Provision does not auto-sync — image
    sync is a multi-minute operation and we want it deliberate, predictable,
-   and visible as its own Task. The remaining steps (rootfs copy, resize,
+   and visible as its own Task. The remaining steps (thin-snapshot the base
+   image LV into the VM's disk LV, resize,
    SSH key injection, per-VM hostname `atlas-<first-8-of-uuid>` written to
    `/etc/hostname` and `/etc/hosts`, 512 MiB `/swapfile`, fresh per-VM
    `/etc/ssh/ssh_host_*` keypairs, per-VM `/etc/machine-id`, config
@@ -213,26 +216,32 @@ reaching it — `curl --unix-socket` talks to it from the host as before.
 `Virtual Machine.snapshot(title)` on a **Stopped** VM. Runs
 [`snapshot-vm.sh`](../scripts/snapshot-vm.sh):
 
-1. Pre-flight `df` check — refuse if free space on `/var/lib/atlas` can't hold
-   the rootfs copy plus 10% headroom. The
+1. Pre-flight thin-pool check — refuse if the pool's `data_percent` or
+   `metadata_percent` is ≥ 90%. A thin snapshot consumes no space up front, but
+   every subsequent CoW write allocates from the pool; taking snapshots against
+   an almost-full pool courts a pool-exhaustion stall. The
    [Firecracker docs](../../references/firecracker/docs/snapshotting/snapshot-support.md)
-   warn that unbounded snapshots are a DoS vector; this is the floor (no quota
-   system this iteration).
-2. `cp` the VM's `rootfs.ext4` to
-   `/var/lib/atlas/virtual-machines/<uuid>/snapshots/<snapshot-uuid>/rootfs.ext4`.
-3. Print `SIZE_BYTES=<n>`.
+   warn unbounded snapshots are a DoS vector; pool-space accounting is the
+   guard (no quota system this iteration).
+2. `lvcreate -s atlas-vm-<uuid> -n atlas-snap-<snapshot-uuid>` — an instant CoW
+   thin snapshot of the VM's disk LV. Pure host op, no jail interaction; the
+   snapshot shares the disk's blocks until one side is written.
+3. Print `SIZE_BYTES=<n>` (from `blockdev --getsize64` on the snapshot LV).
 
 The controller inserts a `Virtual Machine Snapshot` row (`Pending`), runs the
-Task, then records `rootfs_path`, `size_bytes`, and flips it to `Available`.
-One snapshot = one row = one on-host file. Deleting the row runs
-[`delete-snapshot-vm.sh`](../scripts/delete-snapshot-vm.sh) via `on_trash`
-(skipped when the VM is already Terminated — its files are gone). See
+Task, then records `rootfs_path` (the snapshot's `/dev/atlas/atlas-snap-<uuid>`
+device path), `size_bytes`, and flips it to `Available`. One snapshot = one row
+= one thin LV. Deleting the row runs
+[`delete-snapshot-vm.sh`](../scripts/delete-snapshot-vm.sh) via `on_trash`,
+which `lvremove`s the snapshot LV — always, even for a Terminated VM, because
+the snapshot LV lives in the pool (outside the VM directory) and is not swept by
+terminate's `rm -rf`. See
 [02-doctypes.md § Virtual Machine Snapshot](./02-doctypes.md#virtual-machine-snapshot).
 
 ## Restore / Rebuild
 
 One controller method, `Virtual Machine.rebuild(source_type, source)`, on a
-**Stopped** VM. It replaces the VM's `rootfs.ext4` while keeping its identity
+**Stopped** VM. It replaces the VM's disk LV while keeping its identity
 (name/UUID, IPv6, MAC, tap, SSH key). Two sources:
 
 - `source_type="snapshot"` — **Restore**: roll the disk back to one of this
@@ -242,13 +251,15 @@ One controller method, `Virtual Machine.rebuild(source_type, source)`, on a
 - `source_type="image"` — **Rebuild**: lay down a fresh disk from a base image
   (wipes stored data). `source` defaults to the VM's current image.
 
-Both run [`rebuild-vm.sh`](../scripts/rebuild-vm.sh): remove the old rootfs,
-copy from the source, resize to the VM's disk size, then re-inject this VM's
-identity (SSH key, network env, hostname, swap, fresh host keys, machine-id)
-via the shared `prepare-rootfs.sh` library. Because identity is re-derived from
-the VM's own UUID, a restored/rebuilt VM is indistinguishable from a freshly
-provisioned one of the same name. The VM stays `Stopped`; the operator starts
-it when ready.
+Both run [`rebuild-vm.sh`](../scripts/rebuild-vm.sh): `lvremove` the old disk
+LV, recreate it as a fresh CoW snapshot of the source LV (a snapshot LV for
+Restore, the base image LV for Rebuild), grow it to the VM's disk size, then
+re-inject this VM's identity (SSH key, network env, hostname, swap, fresh host
+keys, machine-id) via the shared `prepare-rootfs.sh` library, and re-`mknod` the
+jail's `rootfs.ext4` block node (the new LV's dev_t can differ). Because identity
+is re-derived from the VM's own UUID, a restored/rebuilt VM is indistinguishable
+from a freshly provisioned one of the same name. The VM stays `Stopped`; the
+operator starts it when ready.
 
 ## Clone (create from snapshot)
 
@@ -260,10 +271,12 @@ the safe path that avoids the duplicate-identity hazard of resuming the same
 running state twice.
 
 Mechanically the clone reuses the normal provision flow: the new VM row
-carries an internal `clone_source_rootfs` field, and `provision-vm.sh` copies
-from it instead of the pristine image (the kernel still comes from the image,
-so the image must be synced). Disk defaults to the snapshot's size and can
-only grow.
+carries an internal `clone_source_rootfs` field (the snapshot's LV device
+path), and `provision-vm.sh` snapshots the clone's disk LV from that snapshot
+LV instead of the base image LV (the kernel still comes from the image, so the
+image must be synced). A snapshot-of-a-snapshot is an independent thin LV — the
+clone never shares writable blocks with its source. Disk defaults to the
+snapshot's size and can only grow.
 
 ## Resize
 
@@ -271,9 +284,10 @@ only grow.
 **Stopped** VM. Firecracker reads `/machine-config` only at boot, so resize is
 stop-required; the next Start picks up the new config. Runs
 [`resize-vm.sh`](../scripts/resize-vm.sh): `jq`-edit `vcpu_count` /
-`mem_size_mib` in `firecracker.json`, then grow `rootfs.ext4` to the new disk
-size. Disk may only **grow** — ext4 shrink is unsafe and the on-host file is
-already that large. Unspecified fields keep their current value. The new
+`mem_size_mib` in `firecracker.json`, then `lvextend -r` the disk LV to the new
+size (grows the LV and the ext4 on it in one shot). Disk may only **grow** —
+`lvextend` refuses to shrink and is a clean no-op when the size is already met.
+Unspecified fields keep their current value. The new
 values are persisted on the row through a guarded path (see
 [Why resource fields are frozen outside resize](#why-resource-fields-are-frozen-outside-resize)).
 
@@ -285,14 +299,19 @@ Runs [`terminate-vm.sh`](../scripts/terminate-vm.sh), which:
    stopped).
 2. Calls `vm-network-down.sh` defensively in case the unit's `ExecStopPost`
    didn't fire.
-3. `rm -rf /var/lib/atlas/virtual-machines/<uuid>` and removes the API
-   socket.
+3. `rm -rf /var/lib/atlas/virtual-machines/<uuid>` (takes the jail tree,
+   including the `rootfs.ext4` block node, with it) and removes the API socket.
+4. `lvremove atlas-vm-<uuid>` — the VM's disk LV. Guarded: the helper refuses
+   to remove the thin pool or any `atlas-image-*` base LV, so a teardown bug
+   can never destroy shared state. The VM's snapshot LVs are **not** removed
+   here (their names aren't derivable from the VM UUID) — they go via the
+   per-snapshot delete path below.
 
 Then Python sets `status = Terminated` and deletes the VM's
-`Virtual Machine Snapshot` rows — the `rm -rf` above already removed their
-on-host files, so the rows would otherwise dangle. **The UUID does not
-change.** The Task row that did the terminate remains attached to the
-terminated VM.
+`Virtual Machine Snapshot` rows; each row's `on_trash` `lvremove`s its snapshot
+LV (those live in the pool, outside the VM directory, so step 3's `rm -rf` did
+not touch them). **The UUID does not change.** The Task row that did the
+terminate remains attached to the terminated VM.
 
 If the Terminate Task fails (SSH dropped, script error, etc.), the row stays
 in its prior status. The operator clicks Terminate again — the script is

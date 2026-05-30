@@ -39,8 +39,9 @@ keep it the source of truth.
   PID namespace per VM, custom seccomp filters.
 - No image build pipeline. We download Ubuntu cloud images and use them.
 - No Firecracker memory-state snapshots, no live migration, no high
-  availability. (Disk snapshots — a copy of the VM's rootfs — are supported;
-  see [05-virtual-machine-lifecycle.md](./05-virtual-machine-lifecycle.md).)
+  availability. (Disk snapshots — instant copy-on-write LVM thin snapshots of
+  the VM's disk — are supported; see
+  [05-virtual-machine-lifecycle.md](./05-virtual-machine-lifecycle.md).)
 - No autoscaling, scheduling, or placement. The operator picks the server.
 - No metrics or alerting. `journalctl` is enough.
 - No web UI of our own. Desk is the UI.
@@ -59,7 +60,8 @@ keep it the source of truth.
    when provisioning. No scheduler.
 5. **Few dependencies.** Frappe + standard library + the system `ssh` command.
    On the server: `firecracker`, `systemd`, `iproute2`, `nftables`, `curl`,
-   `jq`, `e2fsprogs`, `squashfs-tools`. No agent runs on the server.
+   `jq`, `e2fsprogs`, `squashfs-tools`, `lvm2`, `thin-provisioning-tools`. No
+   agent runs on the server.
 6. **Don't import — copy.** If a third-party library has a good idea (pyinfra,
    zx), reimplement the small subset we need. We avoid library coupling on a
    foundational layer.

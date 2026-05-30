@@ -178,9 +178,10 @@ upload scripts/provision-vm.sh to the server (one ssh+scp pair)
       v
 ssh root@server "VAR=val ... bash /tmp/atlas/provision-vm.sh"
       |  -- the script does, on the server, in one process:
-      |     - cp rootfs from image dir to VM dir
-      |     - truncate + resize2fs
-      |     - mount, write SSH key + env, umount
+      |     - lvcreate -s: instant CoW snapshot of the base image LV -> VM disk LV
+      |     - lvextend -r if disk_gigabytes > base (grow LV + ext4)
+      |     - mount the LV device, write SSH key + env, umount
+      |     - mknod the LV's block node into the jail (per-VM uid, 0660)
       |     - write firecracker.json, network.env, jailer-launch.sh
       |     - systemctl enable --now firecracker-vm@<name>.service
       |  (systemd's ExecStartPre runs vm-network-up.sh; ExecStart the launcher)

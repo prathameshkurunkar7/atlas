@@ -267,8 +267,10 @@ class TestVirtualMachine(IntegrationTestCase):
 		self.assertEqual(snapshot.source_image, vm.image)
 		self.assertEqual(snapshot.disk_gigabytes, vm.disk_gigabytes)
 		self.assertEqual(snapshot.size_bytes, 4294967296)
-		self.assertIn(snapshot.name, snapshot.rootfs_path)
-		self.assertIn(vm.name, snapshot.rootfs_path)
+		# The snapshot is a thin snapshot LV named by the snapshot's own UUID
+		# (it lives in the pool, independent of the VM), so its device path is
+		# /dev/atlas/atlas-snap-<snapshot-uuid> — keyed by the snapshot, not the VM.
+		self.assertEqual(snapshot.rootfs_path, f"/dev/atlas/atlas-snap-{snapshot.name}")
 
 	def test_snapshot_rejects_when_not_stopped(self) -> None:
 		from atlas.atlas.doctype.virtual_machine import virtual_machine as module
@@ -292,11 +294,22 @@ class TestVirtualMachine(IntegrationTestCase):
 			snapshot_name = vm.snapshot("doomed")
 		self.assertTrue(frappe.db.exists("Virtual Machine Snapshot", snapshot_name))
 
-		# Terminate cascades the snapshot rows; on_trash skips SSH because the
-		# VM is Terminated, so run_task is only the terminate-vm.sh call.
-		with patch.object(module, "run_task", return_value=fake_task(name="task-term")):
+		# Terminate cascades the snapshot rows. Each snapshot's on_trash runs
+		# delete-snapshot-vm.sh to lvremove its snapshot LV — snapshot LVs live in
+		# the thin pool, OUTSIDE the VM directory terminate-vm.sh rm -rf'd, so they
+		# must be removed explicitly (no Terminated short-circuit). on_trash uses
+		# the snapshot module's run_task, so patch that one too.
+		from atlas.atlas.doctype.virtual_machine_snapshot import (
+			virtual_machine_snapshot as snapshot_module,
+		)
+
+		with patch.object(module, "run_task", return_value=fake_task(name="task-term")), patch.object(
+			snapshot_module, "run_task", return_value=fake_task(name="task-snap-del")
+		) as mocked_snapshot:
 			vm.terminate()
 		self.assertFalse(frappe.db.exists("Virtual Machine Snapshot", snapshot_name))
+		# The snapshot LV was removed via the per-snapshot delete script.
+		self.assertEqual(mocked_snapshot.call_args.kwargs["script"], "delete-snapshot-vm.sh")
 
 	def test_parse_size_bytes(self) -> None:
 		from atlas.atlas.doctype.virtual_machine.virtual_machine import _parse_size_bytes

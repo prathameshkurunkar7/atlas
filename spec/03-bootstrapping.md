@@ -30,7 +30,8 @@ In summary, in this order:
 
 1. Verifies architecture matches and `/dev/kvm` is readable+writable.
 2. Waits for the apt locks to clear, then installs `ca-certificates`,
-   `curl`, `e2fsprogs`, `iproute2`, `jq`, `nftables`, `squashfs-tools`.
+   `curl`, `e2fsprogs`, `iproute2`, `jq`, `lvm2`, `nftables`,
+   `squashfs-tools`, `thin-provisioning-tools`.
    A freshly-booted cloud image still has cloud-init / unattended-upgrades
    running its own `apt-get` for the first minutes, holding the apt locks;
    the script blocks on `cloud-init status --wait` and then polls the
@@ -54,7 +55,19 @@ In summary, in this order:
    filter) and a `postrouting` chain holding the host-wide IPv4 masquerade
    rule. See [06-networking.md](./06-networking.md).
 7. Creates the `/var/lib/atlas/` directory tree.
-8. Writes `FIRECRACKER_VERSION`, `JAILER_VERSION`, `KERNEL_VERSION`,
+8. Creates the **LVM thin pool** that backs every VM disk: loads `dm_thin_pool`
+   (persisted via `/etc/modules-load.d/60-atlas-lvm.conf`), then runs the
+   idempotent `atlas_pool_ensure` — a sparse backing file at
+   `/var/lib/atlas/pool/atlas-pool.img`, a loop device over it, a PV/VG
+   (`atlas`), and a thin pool LV (`pool0`, with an explicit
+   `--poolmetadatasize 1G`). The PV is a **loopback file** because a stock
+   droplet has no spare block device; the only line that changes for a real
+   attached device (the spec/09 follow-on) is the loop binding. Bootstrap is
+   **not** re-run on reboot, so it also enables `atlas-pool.service` — a oneshot
+   that re-sources the durable `/var/lib/atlas/bin/lvm.sh` and re-asserts the
+   pool's loop device on boot, ordered before the VM units. See
+   [07-filesystem-layout.md](./07-filesystem-layout.md).
+9. Writes `FIRECRACKER_VERSION`, `JAILER_VERSION`, `KERNEL_VERSION`,
    `ARCHITECTURE` to `/var/lib/atlas/bootstrap.json` (the single source of
    truth) and `cat`s it on stdout. `firecracker_version` and `jailer_version`
    are always the same (one tarball) but both are recorded on the `Server` row.
@@ -84,7 +97,7 @@ The hardening is **not** a separate operation, button, or Task: it is part of
 | --- | --- | --- |
 | Network sysctls | reject ICMP redirects, no source routing, no redirect-send, log martians, bogus/broadcast ICMP ignored, SYN cookies, IPv6 `accept_ra=0` — all in `/etc/sysctl.d/60-atlas.conf` alongside the forwarding lines | CIS 3.3.2–3.3.11 |
 | sshd drop-in | `/etc/ssh/sshd_config.d/60-atlas.conf`: key-only root, no password/empty-password/keyboard-interactive auth, `MaxAuthTries 4`, `LoginGraceTime 60`, `ClientAlive 300×3`, modern Ciphers/MACs/KexAlgorithms. Validated with `sshd -t` **before** reload so a bad drop-in can never brick SSH | CIS 5.1 |
-| Module blocklist | `/etc/modprobe.d/60-atlas-blocklist.conf`: unused filesystem modules (`cramfs`, `freevxfs`, `hfs`, `hfsplus`, `jffs2`, `udf`, `usb-storage`) and unused network protocols (`dccp`, `tipc`, `rds`, `sctp`). It must **never** list a load-bearing module — `tun`/`tap` (VM taps), `kvm`/`kvm_intel`/`kvm_amd` (Firecracker), `vhost`/`vhost_net` (virtio), `nf_tables`/`nft_*` (firewall); CIS only blocklists *unused* modules, so none of these appear, but the e2e probe asserts it. | CIS 1.1.1, 3.2 |
+| Module blocklist | `/etc/modprobe.d/60-atlas-blocklist.conf`: unused filesystem modules (`cramfs`, `freevxfs`, `hfs`, `hfsplus`, `jffs2`, `udf`, `usb-storage`) and unused network protocols (`dccp`, `tipc`, `rds`, `sctp`). It must **never** list a load-bearing module — `tun`/`tap` (VM taps), `kvm`/`kvm_intel`/`kvm_amd` (Firecracker), `vhost`/`vhost_net` (virtio), `nf_tables`/`nft_*` (firewall), `dm_mod`/`dm_thin_pool` (the thin-pool VM-disk backend); CIS only blocklists *unused* modules, so none of these appear, but the e2e probe asserts it. | CIS 1.1.1, 3.2 |
 | Security updates | install `unattended-upgrades`, scoped to the **security** pocket only, **no** automatic reboot (a reboot would kill running VMs) | CIS 1.2.2.1 |
 | KSM / swap off | disable Kernel Samepage Merging (cross-VM memory side channel) and swap (guest RAM remanence on disk) | Firecracker prod-host |
 

@@ -4,25 +4,40 @@
 # "$(dirname "$0")/prepare-rootfs.sh".
 #
 # Holds the rootfs preparation shared by provision-vm.sh, rebuild-vm.sh and the
-# clone path: lay down a per-VM rootfs from a source (pristine image or a
-# snapshot copy), resize it, and inject per-VM identity (SSH key, network env,
-# hostname, swap, fresh host keys, machine-id). Each VM still gets unique
-# identity even when the source bytes came from another VM's snapshot, because
-# the host keys and machine-id are rewritten here from this VM's UUID.
+# clone path: create a per-VM rootfs LV from a source (the read-only base image
+# LV, or a snapshot LV for clone/restore), grow it, and inject per-VM identity
+# (SSH key, network env, hostname, swap, fresh host keys, machine-id). Each VM
+# still gets unique identity even when the source blocks came from another VM's
+# snapshot, because the host keys and machine-id are rewritten here from this
+# VM's UUID.
+#
+# The disk is an LVM thin volume, not a file: atlas_prepare_lv creates it as an
+# instant CoW snapshot of the origin LV (shared blocks, O(1)). Callers source
+# lib/lvm.sh too (for atlas_lv_* and atlas_lv_path); this library uses them.
 
-# atlas_copy_rootfs SOURCE DEST DISK_GB
-#   Copy SOURCE to DEST and grow the filesystem to DISK_GB. No-op if DEST
-#   already exists (idempotent re-run).
-atlas_copy_rootfs() {
-    local source_rootfs="$1" dest_rootfs="$2" disk_gb="$3"
-    if [ -f "$dest_rootfs" ]; then
-        return 0
-    fi
-    sudo cp "$source_rootfs" "${dest_rootfs}.part"
-    sudo truncate -s "${disk_gb}G" "${dest_rootfs}.part"
-    sudo e2fsck -fy "${dest_rootfs}.part" >/dev/null 2>&1 || true
-    sudo resize2fs "${dest_rootfs}.part" >/dev/null
-    sudo mv "${dest_rootfs}.part" "$dest_rootfs"
+# atlas_prepare_lv ORIGIN_NAME VM_LV_NAME DISK_GB
+#   Create VM_LV_NAME as a CoW thin snapshot of ORIGIN_NAME, grow it to DISK_GB
+#   if larger than the origin, give it a fresh ext4 UUID + label, and leave it
+#   activated. Idempotent: atlas_lv_from_origin no-ops (and re-activates) if the
+#   LV already exists, so a re-provision reuses the same disk. Echoes nothing;
+#   the LV device is at $(atlas_lv_path VM_LV_NAME) afterwards.
+#
+# A CoW snapshot inherits the origin's ext4 UUID. `mount -o nouuid` is XFS-only
+# (does NOT apply to ext4), so blkid would see two filesystems with the same
+# UUID on the host. tune2fs -U random gives each per-VM disk a distinct UUID;
+# the guest mounts root=/dev/vda so it is UUID-agnostic — this is purely
+# host-side blkid hygiene, done while unmounted.
+atlas_prepare_lv() {
+    local origin_name="$1" vm_lv_name="$2" disk_gb="$3" device
+    atlas_lv_from_origin "$origin_name" "$vm_lv_name"
+    device="$(atlas_lv_path "$vm_lv_name")"
+    # Grow to the VM's disk size if it is larger than the origin. lvextend -r
+    # resizes the filesystem in the same shot; a no-op when sizes already match
+    # (origin built at DEFAULT_DISK_GB, VM usually the same), so guard on it
+    # failing-clean rather than pre-measuring.
+    sudo lvextend -r -L "${disk_gb}G" "$device" >/dev/null 2>&1 || true
+    sudo e2fsck -fy "$device" >/dev/null 2>&1 || true
+    sudo tune2fs -U random -L atlas-root "$device" >/dev/null
 }
 
 # atlas_inject_identity ROOTFS VM_NAME IPV6 SSH_PUBLIC_KEY IPV4_GUEST_CIDR IPV4_GATEWAY
@@ -37,7 +52,9 @@ atlas_inject_identity() {
     local vm_ipv4="$5" vm_ipv4_gateway="$6"
     local mount_point
     mount_point="$(sudo mktemp -d /tmp/atlas-mount-XXXXXX)"
-    sudo mount -o loop "$rootfs_path" "$mount_point"
+    # rootfs_path is now an LV block device (e.g. /dev/atlas/atlas-vm-<uuid>),
+    # not a file — mount it directly, no `-o loop`.
+    sudo mount "$rootfs_path" "$mount_point"
     trap 'sudo umount "$mount_point" 2>/dev/null || true; sudo rmdir "$mount_point" 2>/dev/null || true' EXIT
 
     sudo install -d -m 0700 "${mount_point}/root/.ssh"

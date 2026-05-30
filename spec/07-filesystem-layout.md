@@ -16,14 +16,11 @@ else.
 │   │   │   └── firecracker/<uuid>/root/   # the jail root (per-VM uid owns it)
 │   │   │       ├── firecracker        # copied in by the jailer
 │   │   │       ├── firecracker.json   # config, jail-relative paths
-│   │   │       ├── rootfs.ext4        # per-VM mutable rootfs
+│   │   │       ├── rootfs.ext4        # block-special node → the VM's disk LV (mknod'd in, per-VM uid)
 │   │   │       ├── vmlinux            # hard-link to the image kernel
 │   │   │       └── run/firecracker.socket  # Firecracker API socket
 │   │   ├── network.env               # TAP/IPV6 + IPV4_HOST/GUEST_CIDR + netns + veth names
 │   │   ├── jailer-launch.sh          # generated launcher the unit execs (uid/gid, netns, cgroup/rlimit baked in)
-│   │   ├── snapshots/                # disk snapshots of this VM
-│   │   │   └── <snapshot-uuid>/
-│   │   │       └── rootfs.ext4       # a copy taken while Stopped (host-owned)
 │   │   └── log/
 │   │       └── firecracker.log
 │   ├── 19ae...                       # one directory per VM, named by UUID
@@ -31,10 +28,21 @@ else.
 │
 ├── run/                              # (legacy; API socket now lives in the jail)
 │
+├── pool/
+│   └── atlas-pool.img                # sparse loopback PV backing the thin pool
+│
 └── bin/                              # Helper scripts laid down by bootstrap
     ├── vm-network-up.sh
-    └── vm-network-down.sh
+    ├── vm-network-down.sh
+    ├── vm-disk-up.sh                 # ExecStartPre: re-activate the VM's disk LV + refresh its jail node
+    └── lvm.sh                        # sourced thin-pool helpers (also by atlas-pool.service / vm-disk-up.sh)
 ```
+
+The VM disks themselves are **LVM thin volumes**, not files in this tree —
+they live in the `atlas` volume group on the thin pool `pool0`, reachable at
+`/dev/atlas/<name>` (base image `atlas-image-<image>`, per-VM disk
+`atlas-vm-<uuid>`, disk snapshot `atlas-snap-<uuid>`). The `pool/atlas-pool.img`
+sparse file is the loopback PV that group sits on.
 
 ## Conventions
 
@@ -43,15 +51,20 @@ else.
   is the inventory.
 - Logs go inside the VM directory, not `/var/log/`. Easier to clean up;
   easier to ship in one tarball.
-- The VM's working files — rootfs, kernel link, Firecracker config, and the
-  API socket — live inside the per-VM **jail** at
+- The VM's working files — the kernel link, Firecracker config, the API
+  socket, and the `rootfs.ext4` block node — live inside the per-VM **jail** at
   `jail/firecracker/<uuid>/root/`, owned by the VM's per-VM uid (the jailer
   chroots Firecracker there). The jail is nested under the VM directory, so
-  `rm -rf` of the VM directory still takes everything with it.
-- Disk snapshots live under the VM's own `snapshots/<snapshot-uuid>/` (host-
-  owned, outside the jail), so terminating a VM (`rm -rf` of its directory)
-  takes its snapshots with it. A snapshot is just a copy of the jail's
-  `rootfs.ext4` taken while the VM is Stopped.
+  `rm -rf` of the VM directory still takes everything with it. The disk itself
+  is *not* a file here: `rootfs.ext4` is a block-special node `mknod`'d to point
+  at the VM's disk LV (`/dev/atlas/atlas-vm-<uuid>`), so the `rm -rf` removes the
+  node but not the LV — `terminate-vm.sh` `lvremove`s the LV separately.
+- Disk snapshots are **LVM thin snapshots** (`atlas-snap-<snapshot-uuid>`),
+  not files under the VM directory. They live in the pool, independent of the
+  VM's directory and of the origin VM disk, so terminating a VM does **not**
+  take its snapshots with it — `delete-snapshot-vm.sh` `lvremove`s the snapshot
+  LV explicitly. A snapshot is an instant copy-on-write `lvcreate -s` of the
+  VM's disk LV, taken while the VM is Stopped (see [spec/05](./05-virtual-machine-lifecycle.md)).
 - The API socket is created by Firecracker inside its jail
   (`jail/.../root/run/firecracker.socket`), not under `/var/lib/atlas/run/`.
   The legacy `run/` directory is still created by bootstrap but is unused.
@@ -61,27 +74,83 @@ else.
   and connect via the short relative name `firecracker.socket`. Firecracker
   itself binds it as the relative `run/firecracker.socket` from inside the
   chroot, where the path is short, so the bind never hit the limit.
-- Images are read-only after sync. Provisioning copies the image rootfs into
-  the VM's jail; the kernel is hard-linked in (one copy, shared by inode).
+- Images are read-only after sync. Sync imports the image rootfs into a
+  read-only thin LV (`atlas-image-<image>`); provisioning takes an instant
+  copy-on-write snapshot of it for the VM's disk. The kernel is still a plain
+  file, hard-linked into the jail (one copy, shared by inode).
 
-## Why plain `cp` for per-VM rootfs
+## Why LVM thin volumes for per-VM disks
 
-This iteration uses a full copy of the image rootfs per VM. Not overlayfs,
-not CoW, not reflinks.
+Each VM disk is an **LVM thin snapshot of the read-only base image LV** —
+`lvcreate -s`, an instant copy-on-write clone that shares the base's blocks
+until the VM writes. Not a full `cp`, not overlayfs, not ext4 reflinks (ext4
+has none). The base image is itself a read-only thin LV imported at sync.
 
-- Simple to reason about (one regular file per VM).
-- Survives reboots and corruption without special handling.
-- Disk overhead is bounded: ~600 MB pristine, resized up to `disk_gigabytes`.
-  On `s-2vcpu-4gb-intel` (80 GB SSD) that's room for many VMs.
+- **Instant, space-thin provisioning.** A new VM disk is a metadata operation:
+  no N-GB copy, near-zero extra space until the guest writes. Density is bounded
+  by *written* blocks, not by VM count × image size.
+- **CoW snapshots are the same primitive.** A disk snapshot is another
+  `lvcreate -s` off the VM's disk LV — instant, shared blocks, and an
+  independent origin (removing the base or the VM disk does not break it).
+- **Thin-pool origins are independent**, so terminate can `lvremove` a VM disk
+  (or even a base image) without checking for snapshots taken from it.
+- **Naming derives from UUIDs**, so this needed no DocType/schema change: the VG
+  is `atlas`, the pool `pool0`, devices live at `/dev/atlas/atlas-vm-<uuid>`,
+  `atlas-snap-<uuid>`, `atlas-image-<image>`. The Python layer stays
+  path-string oriented; the storage model lives in the shell scripts +
+  [`lib/lvm.sh`](../scripts/lib/lvm.sh).
 
-When density matters we will revisit. The decision is reversible — switch
-to overlayfs by changing one script, no doc-type changes needed.
+The PV under the pool is a sparse loopback file (`pool/atlas-pool.img`) on a
+stock droplet's root disk — a real attached block device is the spec/09
+follow-on. See [spec/08](./08-images.md) for the base-LV import and
+[spec/05](./05-virtual-machine-lifecycle.md) for clone/snapshot/resize/terminate
+mechanics.
 
-## What if `/var/lib/atlas/` runs out of space?
+## What if the thin pool runs out of space?
 
-The operator gets paged (out of scope for this iteration), runs `df`, deletes
-terminated VMs (they should already be cleaned by `terminate-vm.sh`), or
-provisions another server. No janitor in this iteration.
+A thin pool over-commits: the sum of VM disk *capacities* can exceed the pool's
+real size, and the pool fills as guests actually write. The host-side guard is
+pool-space accounting — `snapshot-vm.sh` (and any block-allocating op) refuses
+when the pool's `data_percent` or `metadata_percent` is ≥90% (read from `lvs`),
+rather than `df` on a filesystem. We watch the two percentages **separately**:
+metadata exhaustion is the nastier failure (it can wedge the whole pool, not
+just one volume), which is why the pool is created with an explicit
+`--poolmetadatasize 1G` rather than the auto-formula, which under-sizes for
+snapshot-heavy use.
+
+If the pool fills anyway despite the guard, the thin-pool `errorwhenfull`
+policy is left at its LVM default: a write that can't allocate **queues for 60s
+and then fails with EIO** (rather than `errorwhenfull=y`, which fails
+immediately). That gives a monitoring/eviction window a chance to free space
+before guests see I/O errors. We don't change this default in this iteration.
+Past that, the operator gets paged (out of scope for this iteration), deletes
+terminated VMs and stale snapshots, or provisions another server. Pool
+autoscale / quota / GC is a spec/09 follow-on; there is no janitor in this
+iteration.
+
+## Surviving a host reboot
+
+The pool's backing file persists across a reboot, but two pieces of state do
+not, and both are reconstructed from on-disk state — never from the Frappe DB:
+
+- **The pool.** The loop binding and the VG/pool activation are gone after a
+  reboot. `atlas-pool.service` (a oneshot, ordered `Before=firecracker-vm@.service`)
+  re-runs `atlas_pool_ensure`, which re-attaches the loop device and activates
+  the VG with `vgchange -ay -K`. The `-K` is load-bearing: per-VM disks are
+  `lvcreate -s` thin snapshots and carry the LVM **activation-skip** flag, so a
+  bare `vgchange -ay` would leave every VM disk inactive. The function is also
+  idempotent against LVM's *own* event-based autoactivation, which can surface
+  the pool concurrently at boot — it guards the `lvcreate` on a fresh existence
+  check rather than aborting.
+- **Each VM's disk + jail node.** A VM disk's device-mapper minor can renumber
+  across a reboot, which would dangle the `rootfs.ext4` block node mknod'd into
+  the jail at provision time. Provision is not re-run on boot, so each
+  `firecracker-vm@.service` runs `vm-disk-up.sh` as an `ExecStartPre`: it
+  re-activates the VM's own disk LV (`-K`) and re-mknods the jail node from the
+  LV's *current* major:minor (reading the per-VM uid from `network.env`). This
+  is the disk analogue of `vm-network-up.sh`, and it makes an enabled VM
+  self-heal its disk on every start — reboot, dm-renumber, or a manual
+  `lvchange -an` all recover with no operator action.
 
 ## Where the Atlas helper scripts come from
 

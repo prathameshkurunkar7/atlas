@@ -65,12 +65,15 @@ def run() -> None:
 
 		_assert_remote_layout(server_name)
 		_assert_hardening_applied(server_name)
+		_assert_pool_present(server_name)
 
 		# Idempotency: re-bootstrap on an already-Active server, then prove the
-		# hardening state is unchanged (drop-ins are install -m overwrites, so a
-		# re-run is a clean no-op — the hardening readback must still pass).
+		# hardening + pool state is unchanged (drop-ins are install -m overwrites
+		# and atlas_pool_ensure is gated, so a re-run is a clean no-op — both
+		# readbacks must still pass).
 		server_doc.bootstrap()
 		_assert_hardening_applied(server_name)
+		_assert_pool_present(server_name)
 	except Exception:
 		elapsed = time.monotonic() - start_clock
 		print(f"server-provisioning: FAIL in {elapsed:.0f}s")
@@ -108,9 +111,10 @@ def run_smoke(reuse: bool = True, keep: bool = True) -> None:
 		_check_test_connection(server)
 		_check_finish_provisioning_idempotent(server)
 		# The shared host was bootstrapped (and re-bootstrapped by the
-		# idempotency check above), so the hardening drop-ins are present —
-		# read them back here too, the cheap host-only regression guard.
+		# idempotency check above), so the hardening drop-ins + thin pool are
+		# present — read them back here too, the cheap host-only regression guard.
 		_assert_hardening_applied(server.name)
+		_assert_pool_present(server.name)
 
 
 # ----- fresh-provision helpers ---------------------------------------------
@@ -153,6 +157,21 @@ def _assert_hardening_applied(server_name: str) -> None:
 	)
 	assert task.status == "Success", task.stderr
 	assert "HARDENING PROBE OK" in task.stdout, task.stdout
+
+
+def _assert_pool_present(server_name: str) -> None:
+	"""Read back the LVM thin pool bootstrap-server.sh creates: dm_thin_pool
+	loaded + persisted, the atlas VG and pool0 thin LV present, and the
+	reboot-survival oneshot enabled. Fail-loud probe, so a missing piece
+	surfaces as a non-Success Task."""
+	task = run_task(
+		server=server_name,
+		script="phase-pool-present.sh",
+		variables={},
+		timeout_seconds=60,
+	)
+	assert task.status == "Success", task.stderr
+	assert "POOL PROBE OK" in task.stdout, task.stdout
 
 
 # ----- shared-server validation --------------------------------------------

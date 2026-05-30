@@ -17,6 +17,11 @@ Type=simple
 ExecStartPre=-/bin/rm -rf /var/lib/atlas/virtual-machines/%i/jail/firecracker/%i/root/dev
 ExecStartPre=/bin/rm -f /var/lib/atlas/virtual-machines/%i/jail/firecracker/%i/root/firecracker.pid
 ExecStartPre=/bin/rm -f /var/lib/atlas/virtual-machines/%i/jail/firecracker/%i/root/run/firecracker.socket
+# Disk (re-activate the thin-snapshot LV and refresh the in-jail block node)
+# must be present before the jailer opens rootfs.ext4. provision is not re-run
+# on boot and `lvcreate -s` disks are activation-skip, so without this a reboot
+# leaves the jail node dangling; vm-disk-up.sh is idempotent and self-heals it.
+ExecStartPre=/var/lib/atlas/bin/vm-disk-up.sh %i
 # Networking (netns + veth + in-namespace tap) must exist before the jailer
 # joins the namespace; ExecStartPre runs to completion before ExecStart.
 ExecStartPre=/var/lib/atlas/bin/vm-network-up.sh %i

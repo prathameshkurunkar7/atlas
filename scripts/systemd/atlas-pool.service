@@ -1,0 +1,23 @@
+[Unit]
+Description=Atlas LVM thin pool
+# The pool lives on a loopback PV (a sparse backing file on the root fs). The
+# backing file survives a reboot, but the loop device binding does not, so the
+# VG/pool are gone until the loop is re-attached. bootstrap-server.sh creates
+# the pool but is NOT re-run on boot, so this oneshot re-asserts it. Ordered
+# before any VM unit (firecracker-vm@.service Wants network-online.target;
+# this only needs local fs) so a VM never starts against a missing pool.
+After=local-fs.target
+Before=firecracker-vm@.service
+DefaultDependencies=no
+RequiresMountsFor=/var/lib/atlas/pool
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Source the durable helper library and re-assert the pool. atlas_pool_ensure is
+# idempotent: if the pool LV already exists it only re-attaches the loop device
+# and activates the VG; otherwise it rebuilds pv/vg/pool from the backing file.
+ExecStart=/bin/bash -c '. /var/lib/atlas/bin/lvm.sh && atlas_pool_ensure'
+
+[Install]
+WantedBy=multi-user.target
