@@ -17,6 +17,13 @@ repos:
       - id: check-yaml
       - id: debug-statements
 
+  - repo: https://github.com/PyCQA/isort
+    rev: 6.1.0
+    hooks:
+      - id: isort
+        name: "Run isort import sorter"
+        # Config in pyproject.toml [tool.isort] is matched to ruff's `I` rule.
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.14.10
     hooks:

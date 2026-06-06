@@ -63,3 +63,13 @@ typing-modules = ["frappe.types.DF"]
 quote-style = "double"
 indent-style = "tab"
 docstring-code-format = true
+
+# isort is configured to produce byte-identical output to ruff's import sorter
+# (the `I` rule above), so the two never fight. If you change line-length,
+# first-party packages, or the ruff format indent, mirror it here too.
+[tool.isort]
+profile = "black"
+line_length = 110
+indent = "\t"
+known_first_party = ["atlas"]
+split_on_trailing_comma = true
