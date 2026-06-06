@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from atlas._run import run, run_ok
 from atlas.network_env import default_route_device, read_network_env
 from atlas.paths import VirtualMachinePaths
+from atlas.reserved_ip_nat import apply_reserved_ip_nat, discover_reserved_ip_anchor
 
 
 def main() -> None:
@@ -45,6 +46,10 @@ def main() -> None:
 	namespace_veth = env.require("NAMESPACE_VETH")
 	ipv4_host_cidr = env.require("IPV4_HOST_CIDR")
 	ipv4_guest_cidr = env.require("IPV4_GUEST_CIDR")
+	# Optional: a Reserved IP attached to this VM. Present only for the VMs that
+	# opted into inbound v4 (today, the reverse proxy). Absent for every ordinary
+	# VM, so the 1:1-NAT block below is skipped and nothing changes.
+	reserved_ipv4 = env.get("RESERVED_IPV4")
 
 	# The guest's private v4 as a bare host address. The host routes a /32 to it
 	# (the v4 analog of the VM's /128 v6 route) — a route prefix must be a network
@@ -334,6 +339,19 @@ def main() -> None:
 		host_veth,
 		"accept",
 	)
+
+	# 8. Inbound v4: if a Reserved IP is attached, 1:1-NAT the droplet's ANCHOR IP
+	#    (the destination DO actually delivers reserved-IP traffic to — NOT the
+	#    reserved IP, which never appears on the droplet) to the guest's /30: DNAT
+	#    in, SNAT out as the anchor + a policy route via the anchor gateway so DO
+	#    maps it back to the reserved IP. The anchor is discovered fresh from DO
+	#    metadata (authoritative; it can change across a droplet rebuild), keyed off
+	#    the RESERVED_IPV4 flag. Idempotent, rebuilt on every cold boot like the
+	#    scaffold above; the guest stays unaware (sees only its private v4). See
+	#    reserved_ip_nat.py and the atlas-reserved-ip-anchor-dnat finding.
+	if reserved_ipv4:
+		anchor = discover_reserved_ip_anchor()
+		apply_reserved_ip_nat(anchor, ipv4_guest_address, host_veth)
 
 
 if __name__ == "__main__":

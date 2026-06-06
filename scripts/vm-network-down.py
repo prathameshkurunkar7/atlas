@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from atlas._run import run
 from atlas.network_env import default_route_device, read_network_env_optional
 from atlas.paths import VirtualMachinePaths
+from atlas.reserved_ip_nat import remove_reserved_ip_nat
 
 
 def main() -> None:
@@ -37,6 +38,14 @@ def main() -> None:
 	host_veth = env.get("HOST_VETH")
 	ipv4_guest_cidr = env.get("IPV4_GUEST_CIDR")
 	atlas_netns = env.get("ATLAS_NETNS")
+	reserved_ipv4 = env.get("RESERVED_IPV4")
+
+	# Drop the inbound-v4 1:1-NAT first, while we still have the guest /30 from
+	# the env (the namespace delete below would otherwise leave the host-table
+	# rules + policy route dangling). Keyed on the guest v4 alone — no anchor
+	# rediscovery needed. Best-effort, like everything in this teardown.
+	if reserved_ipv4 and ipv4_guest_cidr:
+		remove_reserved_ip_nat(ipv4_guest_cidr.split("/", 1)[0])
 
 	# The v6 uplink for the proxy-NDP delete. The shell's trailing `|| true`
 	# tolerates a missing default route — default_route_device(tolerate_missing).

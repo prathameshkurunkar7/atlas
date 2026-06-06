@@ -1,3 +1,4 @@
+import contextlib
 from unittest.mock import MagicMock, patch
 
 import frappe
@@ -10,6 +11,7 @@ from atlas.atlas.doctype.virtual_machine.test_virtual_machine import (
 	_new_vm,
 )
 from atlas.atlas.providers.base import ReservedIp
+from atlas.tests._mocks import fake_task
 from atlas.tests.fixtures import make_provider, make_server
 
 
@@ -22,6 +24,22 @@ def _make_reserved_ip(server: str, ip_address: str, **overrides) -> "frappe.mode
 	}
 	doc.update(overrides)
 	return frappe.get_doc(doc).insert(ignore_permissions=True)
+
+
+@contextlib.contextmanager
+def _mock_host_side():
+	"""Patch the two host/vendor side effects attach()/detach() now perform — the
+	provider (assign/unassign on the droplet) and the host NAT Task — so the
+	invariant-focused tests don't reach a real droplet or SSH. Yields
+	(provider, run_task) MagicMocks so a test can assert the call shapes (assert
+	INSIDE the `with`: the patch is undone on exit)."""
+	provider = MagicMock()
+	run_task = MagicMock(return_value=fake_task(name="task-rip"))
+	with (
+		patch.object(module, "for_provider", return_value=provider),
+		patch.object(module, "run_task", run_task),
+	):
+		yield provider, run_task
 
 
 def _purge_reserved_ips_and_vms() -> None:
@@ -37,7 +55,10 @@ def _purge_reserved_ips_and_vms() -> None:
 
 class TestReservedIP(IntegrationTestCase):
 	def setUp(self) -> None:
-		_ensure_test_server()
+		server = _ensure_test_server()
+		# A real Active DO server always carries its droplet id; attach() needs it
+		# to bind the reserved IP to the droplet at the vendor.
+		frappe.db.set_value("Server", server, "provider_resource_id", "droplet-test")
 		_ensure_test_image()
 		_purge_reserved_ips_and_vms()
 
@@ -50,12 +71,39 @@ class TestReservedIP(IntegrationTestCase):
 		server = _ensure_test_server()
 		vm = _new_vm()
 		rip = _make_reserved_ip(server, "203.0.113.6")
-		rip.attach(vm.name)
+		with _mock_host_side():
+			rip.attach(vm.name)
 		rip.reload()
 		self.assertEqual(rip.status, "Attached")
 		self.assertEqual(rip.virtual_machine, vm.name)
 		vm.reload()
 		self.assertEqual(vm.public_ipv4, "203.0.113.6")
+
+	def test_attach_binds_vendor_and_runs_host_nat_task(self) -> None:
+		"""attach() binds the reserved IP to the Server's droplet at the vendor and
+		dispatches the host 1:1-NAT Task with attach action."""
+		server = _ensure_test_server()
+		frappe.db.set_value("Server", server, "provider_resource_id", "droplet-attach")
+		vm = _new_vm()
+		rip = _make_reserved_ip(server, "203.0.113.20")
+		with _mock_host_side() as (provider, run_task):
+			rip.attach(vm.name)
+			provider.assign_reserved_ip.assert_called_once_with("do-reserved-1", "droplet-attach")
+			(_, kwargs) = run_task.call_args
+		self.assertEqual(kwargs["script"], "vm-reserved-ip.py")
+		self.assertEqual(kwargs["variables"]["ACTION"], "attach")
+		self.assertEqual(kwargs["variables"]["RESERVED_IPV4"], "203.0.113.20")
+		self.assertEqual(kwargs["variables"]["VIRTUAL_MACHINE_NAME"], vm.name)
+
+	def test_attach_throws_when_server_has_no_droplet_id(self) -> None:
+		server = _ensure_test_server()
+		frappe.db.set_value("Server", server, "provider_resource_id", None)
+		vm = _new_vm()
+		rip = _make_reserved_ip(server, "203.0.113.21")
+		with _mock_host_side():
+			with self.assertRaises(frappe.ValidationError) as raised:
+				rip.attach(vm.name)
+		self.assertIn("provider_resource_id", str(raised.exception))
 
 	def test_attach_rejects_vm_on_different_server(self) -> None:
 		other_server = make_server(
@@ -69,8 +117,9 @@ class TestReservedIP(IntegrationTestCase):
 		)
 		vm = _new_vm()  # on the default test server
 		rip = _make_reserved_ip(other_server.name, "203.0.113.7")
-		with self.assertRaises(frappe.ValidationError) as raised:
-			rip.attach(vm.name)
+		with _mock_host_side():
+			with self.assertRaises(frappe.ValidationError) as raised:
+				rip.attach(vm.name)
 		self.assertIn("different Server", str(raised.exception))
 
 	def test_attach_rejects_when_already_attached(self) -> None:
@@ -78,31 +127,48 @@ class TestReservedIP(IntegrationTestCase):
 		first = _new_vm()
 		second = _new_vm()
 		rip = _make_reserved_ip(server, "203.0.113.8")
-		rip.attach(first.name)
-		with self.assertRaises(frappe.ValidationError) as raised:
-			rip.attach(second.name)
+		with _mock_host_side():
+			rip.attach(first.name)
+			with self.assertRaises(frappe.ValidationError) as raised:
+				rip.attach(second.name)
 		self.assertIn("already attached", str(raised.exception))
 
 	def test_attach_rejects_vm_with_existing_ipv4(self) -> None:
 		server = _ensure_test_server()
 		vm = _new_vm()
-		_make_reserved_ip(server, "203.0.113.9").attach(vm.name)
-		second_ip = _make_reserved_ip(server, "203.0.113.10")
-		with self.assertRaises(frappe.ValidationError) as raised:
-			second_ip.attach(vm.name)
+		with _mock_host_side():
+			_make_reserved_ip(server, "203.0.113.9").attach(vm.name)
+			second_ip = _make_reserved_ip(server, "203.0.113.10")
+			with self.assertRaises(frappe.ValidationError) as raised:
+				second_ip.attach(vm.name)
 		self.assertIn("already has a public IPv4", str(raised.exception))
 
 	def test_detach_clears_vm_and_address(self) -> None:
 		server = _ensure_test_server()
 		vm = _new_vm()
 		rip = _make_reserved_ip(server, "203.0.113.11")
-		rip.attach(vm.name)
-		rip.detach()
+		with _mock_host_side():
+			rip.attach(vm.name)
+			rip.detach()
 		rip.reload()
 		self.assertEqual(rip.status, "Allocated")
 		self.assertFalse(rip.virtual_machine)
 		vm.reload()
 		self.assertFalse(vm.public_ipv4)
+
+	def test_detach_tears_down_host_nat_and_unbinds_vendor(self) -> None:
+		server = _ensure_test_server()
+		vm = _new_vm()
+		rip = _make_reserved_ip(server, "203.0.113.22")
+		with _mock_host_side() as (provider, run_task):
+			rip.attach(vm.name)
+			provider.reset_mock()
+			run_task.reset_mock()
+			rip.detach()
+			provider.unassign_reserved_ip.assert_called_once_with("do-reserved-1")
+			(_, kwargs) = run_task.call_args
+		self.assertEqual(kwargs["script"], "vm-reserved-ip.py")
+		self.assertEqual(kwargs["variables"]["ACTION"], "detach")
 
 	def test_detach_rejects_unattached(self) -> None:
 		rip = _make_reserved_ip(_ensure_test_server(), "203.0.113.12")
@@ -111,10 +177,7 @@ class TestReservedIP(IntegrationTestCase):
 		self.assertIn("not attached", str(raised.exception))
 
 	def test_terminate_detaches_reserved_ip(self) -> None:
-		from unittest.mock import patch
-
-		from atlas.atlas.doctype.virtual_machine import virtual_machine as module
-		from atlas.tests._mocks import fake_task
+		from atlas.atlas.doctype.virtual_machine import virtual_machine as vm_module
 
 		server = _ensure_test_server()
 		vm = _new_vm()
@@ -122,11 +185,18 @@ class TestReservedIP(IntegrationTestCase):
 		vm.last_started = frappe.utils.now_datetime()
 		vm.save(ignore_permissions=True)
 		rip = _make_reserved_ip(server, "203.0.113.13")
-		rip.attach(vm.name)
+		with _mock_host_side():
+			rip.attach(vm.name)
 		# attach() denormalized public_ipv4 onto the VM row via db_set, so our
 		# handle's timestamp is stale; reload before terminate() saves it.
 		vm.reload()
-		with patch.object(module, "run_task", return_value=fake_task(name="task-term-rip")):
+		# terminate-vm.py (vm_module.run_task) AND the reserved-IP detach Task +
+		# vendor unbind (the reserved_ip module's run_task / for_provider) all fire;
+		# patch both modules' side effects.
+		with (
+			patch.object(vm_module, "run_task", return_value=fake_task(name="task-term")),
+			_mock_host_side(),
+		):
 			vm.terminate()
 		rip.reload()
 		self.assertEqual(rip.status, "Allocated")
@@ -142,7 +212,11 @@ class TestReservedIP(IntegrationTestCase):
 
 class TestReservedIPAllocateDiscover(IntegrationTestCase):
 	def setUp(self) -> None:
-		_ensure_test_server()
+		server = _ensure_test_server()
+		# The refuse-while-attached tests attach() first, which binds at the vendor
+		# (needs the droplet id). Tests that probe the missing-id path make their own
+		# server / set the value explicitly, so this default is safe for them.
+		frappe.db.set_value("Server", server, "provider_resource_id", "droplet-test")
 		_purge_reserved_ips_and_vms()
 
 	def test_allocate_creates_row_from_vendor(self) -> None:
@@ -211,7 +285,8 @@ class TestReservedIPAllocateDiscover(IntegrationTestCase):
 		server = _ensure_test_server()
 		vm = _new_vm()
 		rip = _make_reserved_ip(server, "203.0.113.71")
-		rip.attach(vm.name)
+		with _mock_host_side():
+			rip.attach(vm.name)
 		provider = MagicMock()
 		with patch.object(module, "for_provider", return_value=provider):
 			with self.assertRaises(frappe.ValidationError) as raised:
@@ -231,7 +306,8 @@ class TestReservedIPAllocateDiscover(IntegrationTestCase):
 		server = _ensure_test_server()
 		vm = _new_vm()
 		rip = _make_reserved_ip(server, "203.0.113.73")
-		rip.attach(vm.name)
+		with _mock_host_side():
+			rip.attach(vm.name)
 		with self.assertRaises(frappe.ValidationError) as raised:
 			frappe.delete_doc("Reserved IP", rip.name, ignore_permissions=True)
 		self.assertIn("Detach", str(raised.exception))

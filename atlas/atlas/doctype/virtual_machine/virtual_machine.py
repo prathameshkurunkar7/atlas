@@ -284,6 +284,12 @@ class VirtualMachine(Document):
 	def _rebuild_variables(self, source_type: str, source: str | None) -> dict:
 		# Rebuild rewrites the guest's network env, so it must re-inject the
 		# NAT44 v4 link or the rebuilt guest would boot with no v4 egress.
+		#
+		# An attached Reserved IP needs NOTHING here: rebuild swaps only the disk
+		# and does not touch the host-side network.env, so its RESERVED_IPV4 line
+		# (written by vm-reserved-ip.py at attach) survives the rebuild and the
+		# 1:1-NAT is re-applied by vm-network-up.py on the next unit start. The
+		# guest never sees the reserved IP either way (it binds only its /30).
 		base = {
 			"VIRTUAL_MACHINE_NAME": self.name,
 			"DISK_GB": str(self.disk_gigabytes),
@@ -440,6 +446,10 @@ class VirtualMachine(Document):
 			"RESOURCE_ARG": _cgroup_values(resource_limit_args(self.disk_gigabytes)),
 			# Per-VM NAT44 v4 egress link (host/guest /30 + gateway).
 			**self._ipv4_link_variables(),
+			# An attached Reserved IP (if any) so a fresh provision re-creates its
+			# inbound 1:1-NAT on first boot. Empty/None is dropped by the Task
+			# runner's flag rendering, leaving the env clean for ordinary VMs.
+			"RESERVED_IPV4": self.public_ipv4,
 		}
 		# Clone: seed the disk from a snapshot's rootfs instead of the pristine
 		# image. The kernel still comes from the image; provision-vm.py's image

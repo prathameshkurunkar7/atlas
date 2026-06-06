@@ -1,0 +1,100 @@
+"""Unit tests for the reserved-IP 1:1-NAT rule generation (anchor-based).
+
+Run with bare `python3 -m unittest atlas.test_reserved_ip_nat` from scripts/lib:
+no Frappe, no site, no host, no nft, no DO metadata. These cover the argv
+construction and the substring-fingerprint / handle-scrape helpers that drive
+apply()/remove() without touching the host.
+
+The rules match the droplet's ANCHOR IP (the destination DO actually delivers a
+reserved-IP packet to), not the reserved IP — proven on a live droplet; see the
+module docstring and the atlas-reserved-ip-anchor-dnat finding.
+"""
+
+import unittest
+
+from atlas import reserved_ip_nat as nat
+
+ANCHOR = "10.47.0.10"
+GUEST = "100.64.0.10"
+VETH = "atlas-h0a1b2c3"
+
+
+class TestRuleArgv(unittest.TestCase):
+	def test_prerouting_chain_is_dstnat_hook(self):
+		argv = nat.prerouting_chain_argv()
+		self.assertEqual(argv[:5], ["add", "chain", "inet", "atlas", "prerouting"])
+		self.assertIn("type nat hook prerouting priority dstnat", argv[-1])
+
+	def test_dnat_matches_anchor_not_reserved(self):
+		# prerouting: ip daddr <ANCHOR> dnat to <guest>. Matching the anchor is the
+		# whole fix — the reserved IP never appears on the droplet.
+		self.assertEqual(
+			nat.dnat_rule_argv(ANCHOR, GUEST),
+			["add", "rule", "inet", "atlas", "prerouting", "ip", "daddr", ANCHOR, "dnat", "to", GUEST],
+		)
+
+	def test_snat_sources_anchor_and_inserts_at_head(self):
+		# `insert` (not `add`) so the per-guest SNAT beats the /16 masquerade, and
+		# the source is the ANCHOR (DO maps anchor->reserved at its edge), not the
+		# reserved IP directly.
+		argv = nat.snat_rule_argv(ANCHOR, GUEST)
+		self.assertEqual(argv[0], "insert")
+		self.assertEqual(
+			argv,
+			["insert", "rule", "inet", "atlas", "postrouting", "ip", "saddr", GUEST, "snat", "to", ANCHOR],
+		)
+
+	def test_forward_accepts_inbound_toward_guest(self):
+		self.assertEqual(
+			nat.forward_rule_argv(GUEST, VETH),
+			["add", "rule", "inet", "atlas", "forward", "ip", "daddr", GUEST, "oifname", VETH, "accept"],
+		)
+
+
+class TestAnchorDataclass(unittest.TestCase):
+	def test_anchor_holds_address_and_gateway(self):
+		a = nat.Anchor(address=ANCHOR, gateway="10.47.0.1")
+		self.assertEqual(a.address, ANCHOR)
+		self.assertEqual(a.gateway, "10.47.0.1")
+
+
+class TestIdempotencyFingerprints(unittest.TestCase):
+	def test_has_dnat_true_only_when_anchor_and_guest_and_dnat(self):
+		listing = f"\t\tip daddr {ANCHOR} dnat to {GUEST}\n"
+		self.assertTrue(nat._has_dnat(listing, ANCHOR, GUEST))
+		# A line for a different guest must not match this guest.
+		other = "\t\tip daddr 10.47.0.10 dnat to 100.64.0.14\n"
+		self.assertFalse(nat._has_dnat(other, ANCHOR, GUEST))
+		# A forward-only line is not a DNAT.
+		self.assertFalse(nat._has_dnat("ip daddr 100.64.0.10 oifname x accept", ANCHOR, GUEST))
+
+	def test_has_snat_true_only_with_snat_keyword(self):
+		listing = f"\t\tip saddr {GUEST} snat to {ANCHOR}\n"
+		self.assertTrue(nat._has_snat(listing, ANCHOR, GUEST))
+		# The masquerade rule for the whole supernet is NOT this guest's SNAT.
+		masq = "\t\tip saddr 100.64.0.0/16 oifname eth0 masquerade\n"
+		self.assertFalse(nat._has_snat(masq, ANCHOR, GUEST))
+
+	def test_has_forward_matches_guest_and_veth(self):
+		listing = f"\t\tip daddr {GUEST} oifname {VETH} accept\n"
+		self.assertTrue(nat._has_forward(listing, GUEST, VETH))
+		self.assertFalse(nat._has_forward(listing, GUEST, "atlas-hdeadbee"))
+
+	def test_handles_for_scrapes_guest_lines_only(self):
+		# `nft -a` appends `# handle N`; the handle is the last token. Only lines
+		# mentioning THIS guest's v4 are collected (the common key across rules).
+		listing = (
+			f"\t\tip daddr {ANCHOR} dnat to {GUEST} # handle 12\n"
+			f"\t\tip saddr {GUEST} snat to {ANCHOR} # handle 13\n"
+			"\t\tip saddr 100.64.0.0/16 oifname eth0 masquerade # handle 4\n"  # shared, not ours
+			"\t\tip daddr 100.64.0.99 oifname y accept # handle 99\n"  # other guest
+		)
+		self.assertEqual(list(nat._handles_for(listing, GUEST)), ["12", "13"])
+
+	def test_handles_for_empty_on_missing_chain(self):
+		# remove() lists with check=False; a missing chain yields "" -> no handles.
+		self.assertEqual(list(nat._handles_for("", GUEST)), [])
+
+
+if __name__ == "__main__":
+	unittest.main()

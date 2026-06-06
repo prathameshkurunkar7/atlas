@@ -9,7 +9,12 @@ could only be eyeballed on a real droplet.
 
 import unittest
 
-from atlas.network_env import NetworkEnv, read_network_env_optional
+from atlas.network_env import (
+	NetworkEnv,
+	read_network_env_optional,
+	remove_network_env,
+	upsert_network_env,
+)
 from atlas.paths import SUN_PATH_MAX, VirtualMachinePaths, image_directory
 from atlas.rootfs import Identity
 
@@ -115,6 +120,51 @@ class TestNetworkEnv(unittest.TestCase):
 		env = read_network_env_optional("/nonexistent/path/network.env")
 		self.assertEqual(env.values, {})
 		self.assertEqual(env.get("ANYTHING"), "")
+
+
+class TestNetworkEnvMutation(unittest.TestCase):
+	"""upsert/remove drive vm-reserved-ip.py's network.env edits — the durable
+	record that lets a reboot re-create the inbound NAT from disk."""
+
+	BASE = "TAP_DEVICE=atlas-x\nIPV4_GUEST_CIDR=100.64.0.10/30\nHOST_VETH=atlas-h0a1b2c3\n"
+
+	def test_upsert_appends_new_key(self):
+		out = upsert_network_env(self.BASE, "RESERVED_IPV4", "203.0.113.7")
+		self.assertIn("RESERVED_IPV4=203.0.113.7\n", out)
+		# The existing lines survive and the file is parseable round-trip.
+		env = NetworkEnv.parse(out)
+		self.assertEqual(env.require("RESERVED_IPV4"), "203.0.113.7")
+		self.assertEqual(env.require("TAP_DEVICE"), "atlas-x")
+
+	def test_upsert_replaces_in_place_not_duplicate(self):
+		once = upsert_network_env(self.BASE, "RESERVED_IPV4", "203.0.113.7")
+		twice = upsert_network_env(once, "RESERVED_IPV4", "203.0.113.9")
+		self.assertEqual(twice.count("RESERVED_IPV4="), 1)
+		self.assertIn("RESERVED_IPV4=203.0.113.9\n", twice)
+		self.assertNotIn("203.0.113.7", twice)
+
+	def test_upsert_ends_with_single_trailing_newline(self):
+		out = upsert_network_env(self.BASE, "RESERVED_IPV4", "203.0.113.7")
+		self.assertTrue(out.endswith("\n"))
+		self.assertFalse(out.endswith("\n\n"))
+
+	def test_remove_drops_the_key(self):
+		with_ip = upsert_network_env(self.BASE, "RESERVED_IPV4", "203.0.113.7")
+		out = remove_network_env(with_ip, "RESERVED_IPV4")
+		self.assertNotIn("RESERVED_IPV4", out)
+		env = NetworkEnv.parse(out)
+		self.assertEqual(env.get("RESERVED_IPV4"), "")
+		self.assertEqual(env.require("TAP_DEVICE"), "atlas-x")
+
+	def test_remove_absent_key_is_noop(self):
+		out = remove_network_env(self.BASE, "RESERVED_IPV4")
+		self.assertEqual(NetworkEnv.parse(out).values, NetworkEnv.parse(self.BASE).values)
+
+	def test_remove_does_not_strip_a_substring_key(self):
+		# A key that merely CONTAINS the target name must survive (exact-key match).
+		text = self.BASE + "RESERVED_IPV4_EXTRA=keep\n"
+		out = remove_network_env(text, "RESERVED_IPV4")
+		self.assertIn("RESERVED_IPV4_EXTRA=keep", out)
 
 
 if __name__ == "__main__":

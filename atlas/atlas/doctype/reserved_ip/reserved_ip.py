@@ -2,6 +2,7 @@ import frappe
 from frappe.model.document import Document
 
 from atlas.atlas.providers import for_provider
+from atlas.atlas.ssh import run_task
 
 # The IP belongs to the Server for its lifetime; only the VM attachment moves.
 IMMUTABLE_AFTER_INSERT = (
@@ -37,10 +38,13 @@ class ReservedIP(Document):
 	def attach(self, virtual_machine: str) -> None:
 		"""Attach this Server-allocated IP to a VM on the same Server.
 
-		Denormalizes the address onto Virtual Machine.public_ipv4 so the VM row
-		carries its public v4 directly. The host-side wiring (DO reserved-IP
-		attach + the 1:1 nftables NAT to the guest /30) is a follow-up Task; this
-		method owns the Frappe-side invariant — one IP, one VM, same Server."""
+		Three effects, in failure-safe order: bind the reserved IP to the droplet
+		at the vendor, run the host-side 1:1-NAT Task (the inbound mirror of the
+		NAT44 egress — DNAT the reserved v4 in, SNAT the guest's egress out as it),
+		then commit the Frappe invariant (one IP, one VM, same Server) and
+		denormalize the address onto Virtual Machine.public_ipv4. The vendor bind
+		and the Task both raise on failure, so a half-applied attach never leaves a
+		Frappe row claiming an attachment the host doesn't have."""
 		if self.virtual_machine:
 			frappe.throw(f"{self.ip_address} is already attached to {self.virtual_machine}")
 		vm = frappe.get_doc("Virtual Machine", virtual_machine)
@@ -48,6 +52,20 @@ class ReservedIP(Document):
 			frappe.throw(f"{self.ip_address} is allocated to a different Server than {virtual_machine}")
 		if vm.public_ipv4:
 			frappe.throw(f"{virtual_machine} already has a public IPv4 ({vm.public_ipv4})")
+
+		# 1. Bind at the vendor: the reserved IP attaches to the DROPLET (the
+		#    Server's provider_resource_id), not the guest — DO has no API to bind
+		#    it to a Firecracker VM. Idempotent: DO no-ops a re-assign. Self-Managed
+		#    is a no-op (the operator routes it). Same Server as discover() maps by.
+		if self.provider_resource_id:
+			droplet_id = frappe.db.get_value("Server", self.server, "provider_resource_id")
+			if not droplet_id:
+				frappe.throw(f"Server {self.server} has no provider_resource_id; cannot assign reserved IP")
+			_provider_for_server(self.server).assign_reserved_ip(self.provider_resource_id, droplet_id)
+		# 2. Host 1:1-NAT, live (no reboot). vm-reserved-ip.py also writes
+		#    RESERVED_IPV4 into network.env so a later boot re-creates the NAT.
+		self._run_nat_task(vm, "attach")
+		# 3. Commit the Frappe invariant last.
 		self.virtual_machine = virtual_machine
 		self.save()
 		vm.db_set("public_ipv4", self.ip_address)
@@ -55,15 +73,52 @@ class ReservedIP(Document):
 	@frappe.whitelist()
 	def detach(self) -> None:
 		"""Release this IP from its VM, leaving it allocated to the Server and
-		available to attach elsewhere. Clears the VM's denormalized address."""
+		available to attach elsewhere. Tears down the host 1:1-NAT and unbinds the
+		IP at the vendor, then clears the Frappe invariant and the VM's
+		denormalized address.
+
+		The host NAT Task is **skipped for a Terminated VM**: terminate-vm.py has
+		already `rm -rf`'d the VM directory (network.env included) and its
+		ExecStopPost (vm-network-down.py) already removed the NAT — running the
+		Task would only fail reading a deleted env. A Stopped VM keeps its env, so
+		the Task still runs there to clear RESERVED_IPV4 (its `remove()` is a no-op
+		on rules that aren't live). A VM row that is fully gone is tolerated too."""
 		if not self.virtual_machine:
 			frappe.throw(f"{self.ip_address} is not attached to any VM")
 		vm_name = self.virtual_machine
+		vm = (
+			frappe.get_doc("Virtual Machine", vm_name)
+			if frappe.db.exists("Virtual Machine", vm_name)
+			else None
+		)
+		# 1. Tear down the host NAT, unless the VM is gone or already Terminated
+		#    (the terminate path already dropped the host networking + the env).
+		if vm and vm.status != "Terminated":
+			self._run_nat_task(vm, "detach")
+		# 2. Unbind at the vendor so the IP can attach to another droplet later.
+		if self.provider_resource_id:
+			_provider_for_server(self.server).unassign_reserved_ip(self.provider_resource_id)
+		# 3. Clear the Frappe invariant + the denormalized address.
 		self.virtual_machine = None
 		self.save()
-		# The VM row may already be gone (terminated + record deleted); guard it.
-		if frappe.db.exists("Virtual Machine", vm_name):
-			frappe.db.set_value("Virtual Machine", vm_name, "public_ipv4", None)
+		if vm:
+			vm.db_set("public_ipv4", None)
+
+	def _run_nat_task(self, vm, action: str) -> None:
+		"""Dispatch vm-reserved-ip.py to add/remove the host 1:1-NAT on the VM's
+		Server. One task, one script (spec principle #3); run_task raises on
+		failure so the caller's invariant commit is gated on the host change."""
+		run_task(
+			server=self.server,
+			script="vm-reserved-ip.py",
+			variables={
+				"VIRTUAL_MACHINE_NAME": vm.name,
+				"RESERVED_IPV4": self.ip_address,
+				"ACTION": action,
+			},
+			virtual_machine=vm.name,
+			timeout_seconds=60,
+		)
 
 	@frappe.whitelist()
 	def release(self) -> None:

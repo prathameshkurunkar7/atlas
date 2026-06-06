@@ -708,12 +708,13 @@ never an independent input.
 The pool's vendor side (reserve / discover / release) goes through the provider
 abstraction (`allocate_reserved_ip` / `list_reserved_ips` / `release_reserved_ip`,
 see [06-networking.md](./06-networking.md#ipv4-ingress-reserved-ip)); the
-attach/detach pair owns only the Frappe invariant.
+attach/detach pair drives the vendor bind, the host 1:1-NAT Task, and the Frappe
+invariant together (in failure-safe order).
 
 - `allocate(server)` *(module function)* — reserve a fresh public IPv4 at the
   vendor (in its single region, unassigned) and write an `Allocated` `Reserved
   IP` row for `server`. Returns the new row name. Binding to the droplet + the
-  host 1:1-NAT happen on `attach()` (a follow-up Task), not here.
+  host 1:1-NAT happen on `attach()`, not here.
 - `discover(server)` *(module function)* — list the vendor's reserved IPs and
   import any bound to `server`'s droplet that Atlas doesn't yet model, creating
   an `Allocated` row per new one (existing ones skipped). A vendor → Frappe
@@ -721,16 +722,22 @@ attach/detach pair owns only the Frappe invariant.
   Server has no `provider_resource_id`.
 - `attach(virtual_machine)` — bind this `Allocated` IP to a VM on the same
   Server. Throws if the IP is already attached, if the VM is on a different
-  Server, or if the VM already has a `public_ipv4`. Sets `virtual_machine`
-  (→ `status = Attached`) and denormalizes `ip_address` onto the VM's
-  `public_ipv4`. The host-side wiring (the DO reserved-IP attach + the 1:1
-  nftables NAT to the guest `/30`) is a follow-up Task; this method owns the
-  Frappe-side invariant — **one IP, one VM, same Server**.
+  Server, or if the VM already has a `public_ipv4`. In failure-safe order: (1)
+  `assign_reserved_ip` binds the IP to the Server's droplet at the vendor
+  (idempotent; Self-Managed no-op); (2) `vm-reserved-ip.py` runs the host 1:1-NAT
+  and writes `RESERVED_IPV4` into the VM's `network.env`; (3) only then sets
+  `virtual_machine` (→ `status = Attached`) and denormalizes `ip_address` onto
+  the VM's `public_ipv4`. The vendor bind and the Task both raise on failure, so
+  a half-applied attach never leaves a row claiming an attachment the host lacks.
+  Owns the invariant — **one IP, one VM, same Server**. See
+  [06-networking.md](./06-networking.md#what-the-host-does).
 - `detach()` — release the IP from its VM back to the Server pool (→ `status =
-  Allocated`) and clear the VM's `public_ipv4`. Guards a missing VM row (a
-  terminated VM whose record was deleted). Called automatically by
-  `Virtual Machine.terminate()` so a terminated VM returns its address to the
-  pool.
+  Allocated`) and clear the VM's `public_ipv4`. Tears down the host NAT via
+  `vm-reserved-ip.py` and unbinds the IP at the vendor first, then clears the
+  invariant. **Skips the host Task for a Terminated VM** (terminate already
+  removed the host networking and `rm -rf`'d the env). Guards a missing VM row.
+  Called automatically by `Virtual Machine.terminate()` so a terminated VM
+  returns its address to the pool.
 - `release()` — destroy the vendor reserved IP and delete this row, returning
   the address to the vendor pool. Refuses while the IP is attached. **Explicit,
   like `Server.archive()`** — destroying the vendor resource is never a side

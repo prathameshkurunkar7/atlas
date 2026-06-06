@@ -143,7 +143,7 @@ The file's docstring lists every config key.
 
 ## Operator use cases
 
-Everything Atlas does for an operator falls into one of eight use cases.
+Everything Atlas does for an operator falls into one of nine use cases.
 The list is the spec's index of operator-visible behavior; the e2e suite
 mirrors it exactly (one module per use case, see
 [`atlas/tests/e2e/use_cases/`](../atlas/tests/e2e/use_cases)). New
@@ -156,6 +156,7 @@ operator-facing features add to this list; new tests follow it.
 | Provision a virtual machine    | `Virtual Machine` → **Provision**                       | [05-virtual-machine-lifecycle.md](./05-virtual-machine-lifecycle.md) |
 | Operate a virtual machine      | `Virtual Machine` → **Start / Stop / Restart / Pause / Resume / Terminate** | [05-virtual-machine-lifecycle.md](./05-virtual-machine-lifecycle.md) |
 | Manage a VM's disk and size    | `Virtual Machine` → **Snapshot / Rebuild / Resize**; `Virtual Machine Snapshot` → **Restore to VM / Clone to new VM / Delete** | [05-virtual-machine-lifecycle.md](./05-virtual-machine-lifecycle.md) |
+| Attach a public IPv4 to a VM   | `Reserved IP` → **Attach / Detach** (the inbound-v4 primitive: DNAT in, SNAT out) | [06-networking.md](./06-networking.md#ipv4-ingress-reserved-ip) |
 | Run an ad-hoc task / reboot    | `Server` → **Run Task / Reboot**                        | [04-tasks.md](./04-tasks.md) |
 | Click any button on the desk   | every form button driven through `run_doc_method`       | (this section, *Desk-button coverage*) |
 | Talk to DigitalOcean           | (internal) verify the DO HTTP client                    | [01-architecture.md](./01-architecture.md) |
@@ -208,8 +209,8 @@ detail. The mapping is one module per use case under
 filenames mirror the table above (`server_provisioning.py`,
 `image_sync.py`, `virtual_machine_provisioning.py`,
 `virtual_machine_lifecycle.py`, `virtual_machine_snapshot.py`,
-`run_task.py`, `desk_buttons.py`, `digitalocean_client.py`,
-`ssh_primitive.py`).
+`reserved_ip_inbound.py`, `run_task.py`, `desk_buttons.py`,
+`digitalocean_client.py`, `ssh_primitive.py`).
 
 Each use-case module is the **single source of truth** for that
 operation's end-to-end coverage. It owns:
@@ -238,7 +239,14 @@ between them is enormous:
   no reusable Active server), the image-sync pipeline (download + sha256
   + unsquash + mkfs, up to 900s), each VM boot to Running (60–120s), each
   guest SSH probe — identity, IPv4 egress (180s), and the reboot
-  drop-and-reconnect in `run_task` (30s + up to 300s poll).
+  drop-and-reconnect in `run_task` (30s + up to 300s poll). The
+  **inbound-v4** primitive (`reserved_ip_inbound`) is a host fact with a
+  twist: it allocates a *real* DO reserved IP and proves both halves of the
+  host 1:1-NAT — **inbound DNAT** by reaching the reserved v4 from **off the
+  droplet** (the controller, the only honest vantage: a host-local packet
+  skips PREROUTING), and **egress SNAT** by a guest-side `cdn-cgi/trace`
+  asserting the source is the reserved IP. Teardown releases the (billable)
+  IP in a `finally`.
 - **Unit-covered logic** — validation throws, state-machine guards, pure
   helpers (networking math, DO response parsing, JSON-shape checks). Every
   one is also covered by a `test_*.py` unit test that runs in

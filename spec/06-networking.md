@@ -79,23 +79,86 @@ vendor → Frappe reconcile, mapped by droplet id); `release()` destroys the
 vendor IP and deletes the row (explicit, like `Server.archive()` — deleting the
 row alone never touches the vendor).
 
-### What the host does (not built yet)
+### Why NAT, not "route it like IPv6"
 
-A reserved IP attaches to the **droplet**, not the guest, so the host must
-**1:1-NAT** it to the guest's private `/30` — symmetric with the egress
-masquerade, in the same `inet atlas` nftables table, recreated idempotently:
+The obvious question is why inbound v4 isn't attached the way a VM's public
+**v6** is — routed straight to the guest, which binds the real address, no
+translation. The answer is a provider asymmetry, not a design choice:
 
-- **inbound:** `prerouting` DNAT — `ip daddr <reserved-v4> dnat to <guest-v4>`
-- **outbound:** `postrouting` SNAT — `ip saddr <guest-v4> snat to <reserved-v4>`
-  (overriding the host-wide masquerade for this one guest, so its egress v4 is
-  the reserved IP, not the host's shared address).
+- **IPv6 is a routed prefix.** DigitalOcean advertises the droplet's `/64` (the
+  routable `/124`, [above](#digitalocean)) onto the droplet's link and runs
+  **NDP on that link**. The host claims a `/128` with **proxy-NDP**
+  (`ip -6 neigh add proxy …`), routes it across the veth into the guest's netns,
+  and the guest binds the **real public address** on `eth0`. There is a question
+  ("who has this `/128`?") for the host to answer, so pure routing works.
+- **A reserved IPv4 is delivered via an anchor IP.** DO binds it to the droplet
+  **inside its own fabric** (that is what the `assign` API call does). The droplet
+  gets a second private address on `eth0` — the **anchor IP** (e.g.
+  `10.47.0.10/16`, with an anchor gateway e.g. `10.47.0.1`) — and DO's edge maps
+  reserved↔anchor. The droplet **never configures the reserved IP itself** (it
+  appears *nowhere* on the host — confirmed on a live droplet). So an inbound
+  packet for the reserved IP arrives with **destination = the anchor IP**, and
+  outbound traffic is seen as the reserved IP only when it is **sourced from the
+  anchor and routed via the anchor gateway**. DO does **not** ARP for the reserved
+  IP on the link, so the v6 recipe (proxy-ARP + a `/32` route) has nothing to
+  intercept. The only host lever is to **translate** against the anchor.
 
+So on DO, "attach a v4 to a VM" **must** be host-side 1:1 NAT. (The one NAT-free
+alternative — bind the anchor through to the guest and configure the reserved IP
+*inside* it — was rejected: it leaks DO-specific anchor config into the guest
+image and breaks the provider-agnostic guest contract below.) On a Self-Managed
+host the operator routes a real v4 to the guest directly; the same field carries
+it and the host-NAT step is a no-op there.
+
+### What the host does
+
+A reserved IP attaches to the **droplet**, not the guest, so the host 1:1-NATs
+it to the guest's private `/30` — but against the **anchor IP**, the on-droplet
+handle DO actually delivers to (matching the reserved IP would silently never
+fire, the original bug an e2e on a real droplet caught). The anchor is **not** in
+Frappe state and is not derivable; it is discovered on the host from DO metadata
+(`…/interfaces/public/0/anchor_ipv4/{address,gateway}`) at attach and at every
+cold boot. The rules live in the same `inet atlas` table, recreated idempotently
+by [`reserved_ip_nat.py`](../scripts/lib/atlas/reserved_ip_nat.py):
+
+- **inbound:** `prerouting` DNAT — `ip daddr <anchor-v4> dnat to <guest-v4>`
+  (a new `prerouting` nat chain; the scaffold only had `forward` + the srcnat
+  `postrouting`).
+- **outbound:** `postrouting` SNAT — `ip saddr <guest-v4> snat to <anchor-v4>`,
+  **inserted at the chain head** (`nft insert`) so it beats the host-wide
+  `100.64.0.0/16 … masquerade`; **plus** a policy route (`ip rule from
+  <guest-v4> → table` whose default is `via <anchor-gateway>`) so this guest's
+  egress leaves over the anchor gateway. Sourced-from-anchor + routed-via-anchor-
+  gateway is DO's contract for "egress as the reserved IP"; SNAT-to-reserved-IP
+  directly would be dropped. Scoped to `from <guest-v4>`, so the host's own
+  default route and every other VM's NAT44 are untouched.
+- **forward:** an explicit accept toward the guest's v4 — belt-and-suspenders
+  today (`policy accept`), load-bearing once a per-VM firewall flips the policy.
+
+The reserved IP stays the **public identity** (recorded in Frappe, denormalized
+onto the VM, published in DNS); the **anchor** is only the on-droplet plumbing.
 The **guest contract is unchanged**: it still sees only its private
 `100.64.x.x/30` and never knows it's behind NAT, exactly as for egress today.
-This host script (and wiring `Reserved IP.attach()` to run it as a Task) is the
-follow-up to the provider layer above; `attach()`/`detach()` today own only the
+
+> **One reserved IP per host, for now.** The anchor is per-*droplet*, shared by
+> any reserved IPs bound to it, so the L3 DNAT can't distinguish two reserved IPs
+> on one host. The current model attaches at most one (one proxy VM per host), so
+> this is fine; a multi-reserved-IP host is a later step.
+
+`RESERVED_IPV4` is written into the VM's `network.env`, so the NAT is the durable
+source of truth on disk: [`vm-network-up.py`](../scripts/vm-network-up.py)
+re-creates it idempotently on every cold boot (and a rebuild, which does not
+rewrite `network.env`, leaves it in place), while
+[`vm-network-down.py`](../scripts/vm-network-down.py) tears it down. A **live
+attach/detach** of a running VM does not wait for a reboot:
+[`Reserved IP.attach()`](./02-doctypes.md#reserved-ip) binds the IP to the
+droplet at the vendor, then runs [`vm-reserved-ip.py`](../scripts/vm-reserved-ip.py)
+as a Task — which writes `RESERVED_IPV4` into `network.env` **and** applies the
+nft rules immediately; `detach()` is symmetric (skipping the host Task for a
+Terminated VM, whose host networking `terminate-vm.py` already tore down). The
 Frappe invariant (one IP, one VM, same Server) and the denormalized
-`Virtual Machine.public_ipv4`.
+`Virtual Machine.public_ipv4` are committed last, gated on the vendor bind and
+the host Task both succeeding.
 
 ## What the host actually gives us
 
@@ -393,9 +456,11 @@ even though it touches host routing.
   no public v4 and no port-forward/DNAT unless it opts in by attaching a
   [Reserved IP](#ipv4-ingress-reserved-ip) — the one deliberate, scoped
   exception (Atlas-owned VMs only, today). Without one, inbound is IPv6-only.
-- **No per-VM egress IP / no NAT64.** Every VM on a host shares the host's
-  public v4 via one masquerade rule. We do not give VMs distinct egress v4s and
-  we do not run NAT64/DNS64 (that would be a layer above Atlas).
+- **No per-VM egress IP by default / no NAT64.** Every VM on a host shares the
+  host's public v4 via one masquerade rule — *unless* it has a
+  [Reserved IP](#ipv4-ingress-reserved-ip) attached, whose SNAT gives that one
+  guest a distinct egress v4 (the inbound exception's outbound half). We do not
+  run NAT64/DNS64 (that would be a layer above Atlas).
 - No per-VM firewall. The guest is on the public internet over IPv6. Tightening
   this is on the [roadmap](./09-roadmap.md).
 - No floating/reserved IPv6. If a VM is archived its address is retired.

@@ -116,12 +116,40 @@ class DigitalOceanClient:
 
 	def unassign_reserved_ip(self, ip: str) -> dict:
 		"""Release the reserved IP from whatever droplet holds it, leaving it
-		allocated to the account/region for re-assignment."""
-		return self._request(
+		allocated to the account/region for re-assignment.
+
+		Waits for the unassign action to settle (the IP's `droplet` going null)
+		before returning: DO's unassign is asynchronous, and a `delete` or
+		re-`assign` issued before it completes is rejected `422 unprocessable`
+		("an action is in progress"). Making detach synchronous here removes that
+		race for every caller (release, re-attach elsewhere)."""
+		action = self._request(
 			"POST",
 			f"/reserved_ips/{ip}/actions",
 			json={"type": "unassign"},
 		)["action"]
+		self._wait_reserved_ip_unassigned(ip)
+		return action
+
+	def _wait_reserved_ip_unassigned(self, ip: str, timeout_seconds: int = 60) -> None:
+		"""Poll until the reserved IP is no longer bound to a droplet. Tolerates a
+		404 (IP already gone). Raises if it is still assigned past the timeout —
+		a stuck unassign is a real failure, not something to swallow."""
+		import time
+
+		deadline = time.monotonic() + timeout_seconds
+		while True:
+			try:
+				reserved = self.get_reserved_ip(ip)
+			except DigitalOceanError as error:
+				if "404" in str(error):
+					return
+				raise
+			if not reserved.get("droplet"):
+				return
+			if time.monotonic() >= deadline:
+				raise DigitalOceanError(f"reserved IP {ip} still assigned after {timeout_seconds}s")
+			time.sleep(2)
 
 	def delete_reserved_ip(self, ip: str) -> None:
 		self._request("DELETE", f"/reserved_ips/{ip}", allow_404=True)

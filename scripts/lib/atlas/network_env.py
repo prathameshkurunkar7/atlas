@@ -73,6 +73,38 @@ def read_network_env(path: str) -> NetworkEnv:
 		return NetworkEnv.parse(handle.read())
 
 
+def upsert_network_env(text: str, key: str, value: str) -> str:
+	"""Return `text` with `key=value` set — replacing an existing line in place
+	(preserving order) or appending it. Used to add `RESERVED_IPV4` to a running
+	VM's network.env at attach time, so a later reboot re-creates the 1:1-NAT from
+	disk exactly as provision would. Pure string transform: the caller does the
+	atomic write (install_file). Trailing-newline preserving."""
+	lines = text.splitlines()
+	rendered = f"{key}={value}"
+	for index, line in enumerate(lines):
+		stripped = line.strip()
+		if stripped and not stripped.startswith("#") and stripped.split("=", 1)[0].strip() == key:
+			lines[index] = rendered
+			break
+	else:
+		lines.append(rendered)
+	return "\n".join(lines) + "\n"
+
+
+def remove_network_env(text: str, key: str) -> str:
+	"""Return `text` with any `key=…` line removed. The detach twin of
+	`upsert_network_env`: a detached VM's env no longer carries `RESERVED_IPV4`,
+	so a reboot brings it up with no inbound NAT. Pure string transform."""
+	kept = [
+		line
+		for line in text.splitlines()
+		if not (
+			line.strip() and not line.strip().startswith("#") and line.strip().split("=", 1)[0].strip() == key
+		)
+	]
+	return "\n".join(kept) + "\n" if kept else ""
+
+
 def read_network_env_optional(path: str) -> NetworkEnv:
 	"""The down-path twin of read_network_env: return an empty NetworkEnv when
 	the file is absent (terminate-vm may have removed it before the unit's

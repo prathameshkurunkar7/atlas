@@ -29,6 +29,7 @@ from atlas.tests.e2e._shared import (
 from atlas.tests.e2e.use_cases import (
 	desk_buttons,
 	image_sync,
+	reserved_ip_inbound,
 	run_task,
 	server_provisioning,
 	ssh_primitive,
@@ -66,6 +67,7 @@ def run_all() -> None:
 		("vm-snapshot", virtual_machine_snapshot.run_against_shared),
 		("run-task", run_task.run),
 		("desk-buttons", desk_buttons.run),
+		("reserved-ip-inbound", reserved_ip_inbound.run),
 		("server-provisioning (validation)", server_provisioning.run_against_shared),
 		("ssh-primitive (transport+bootstrap)", ssh_primitive.run_against_shared),
 	]
@@ -153,6 +155,7 @@ def run_all_smoke() -> None:
 		("vm-snapshot", virtual_machine_snapshot.run_smoke),
 		("run-task", run_task.run_smoke),
 		("desk-buttons", desk_buttons.run_smoke),
+		("reserved-ip-inbound", reserved_ip_inbound.run_smoke),
 		("server-provisioning", server_provisioning.run_smoke),
 		("ssh-primitive", ssh_primitive.run_smoke),
 	]

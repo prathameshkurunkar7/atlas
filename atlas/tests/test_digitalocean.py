@@ -189,12 +189,30 @@ class TestDigitalOceanClient(IntegrationTestCase):
 		self.assertTrue(args[1].endswith("/reserved_ips/203.0.113.5/actions"))
 		self.assertEqual(kwargs["json"], {"type": "assign", "droplet_id": 999})
 
-	def test_unassign_reserved_ip_posts_action(self) -> None:
-		fake = _FakeResponse(201, {"action": {"id": 2, "type": "unassign_ip", "status": "in-progress"}})
-		with patch("atlas.atlas.digitalocean.requests.request", return_value=fake) as request:
+	def test_unassign_reserved_ip_posts_action_then_waits_for_settle(self) -> None:
+		# unassign POSTs the action, then POLLS the IP until `droplet` is null
+		# (DO's unassign is async; delete/re-assign before it settles -> 422). Here
+		# the first GET already shows it unassigned, so the poll exits at once.
+		action = _FakeResponse(201, {"action": {"id": 2, "type": "unassign_ip", "status": "in-progress"}})
+		settled = _FakeResponse(200, {"reserved_ip": {"ip": "203.0.113.5", "droplet": None}})
+		with patch(
+			"atlas.atlas.digitalocean.requests.request", side_effect=[action, settled]
+		) as request:
 			self.client.unassign_reserved_ip("203.0.113.5")
-		_, kwargs = request.call_args
-		self.assertEqual(kwargs["json"], {"type": "unassign"})
+		# First call is the unassign POST; second is the settle-poll GET.
+		first_args, first_kwargs = request.call_args_list[0]
+		self.assertEqual(first_kwargs["json"], {"type": "unassign"})
+		self.assertTrue(first_args[1].endswith("/reserved_ips/203.0.113.5/actions"))
+		second_args, _ = request.call_args_list[1]
+		self.assertEqual(second_args[0], "GET")
+		self.assertTrue(second_args[1].endswith("/reserved_ips/203.0.113.5"))
+
+	def test_unassign_settle_tolerates_404(self) -> None:
+		# If the IP is already gone by the time we poll, that's settled too.
+		action = _FakeResponse(201, {"action": {"id": 2, "type": "unassign_ip"}})
+		gone = _FakeResponse(404)
+		with patch("atlas.atlas.digitalocean.requests.request", side_effect=[action, gone]):
+			self.client.unassign_reserved_ip("203.0.113.5")
 
 	def test_list_reserved_ips_returns_array(self) -> None:
 		fake = _FakeResponse(200, {"reserved_ips": [{"ip": "203.0.113.5"}, {"ip": "203.0.113.6"}]})

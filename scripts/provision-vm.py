@@ -91,6 +91,12 @@ class ProvisionInputs(TaskInputs):
 	# One optional source override: a snapshot rootfs path (clone path). Empty
 	# means provision from the base image. Mirrors the shell's "${VAR:-}".
 	snapshot_rootfs_path: str = ""  # a snapshot's /dev/atlas/<name> device path
+	# Optional: a Reserved IP attached to this VM (the VM's denormalized
+	# public_ipv4). Empty for every ordinary VM. Carried so a rebuild of a VM that
+	# already has an attached v4 re-creates its 1:1-NAT on first boot (the same
+	# reason _ipv4_link_variables is re-injected on rebuild). Live attach/detach
+	# of a *running* VM goes through vm-reserved-ip.py, not provision.
+	reserved_ipv4: str = ""  # the attached Reserved IP, 1:1-NAT'd to the guest /30
 
 
 def main() -> None:
@@ -268,7 +274,7 @@ def _firecracker_config(inputs: "ProvisionInputs") -> str:
 def _network_env(inputs: "ProvisionInputs") -> str:
 	"""The network.env sidecar vm-network-up.sh reads, byte-shape identical to
 	the shell heredoc."""
-	return (
+	env = (
 		f"TAP_DEVICE={inputs.tap_device}\n"
 		f"VIRTUAL_MACHINE_IPV6={inputs.virtual_machine_ipv6}\n"
 		f"ATLAS_NETNS={inputs.atlas_netns}\n"
@@ -278,6 +284,12 @@ def _network_env(inputs: "ProvisionInputs") -> str:
 		f"IPV4_GUEST_CIDR={inputs.ipv4_guest_cidr}\n"
 		f"ATLAS_FC_UID={inputs.atlas_fc_uid}\n"
 	)
+	# Only written when the VM has a Reserved IP attached — vm-network-up reads it
+	# with .get() and skips the 1:1-NAT block when absent, so an ordinary VM's env
+	# is unchanged.
+	if inputs.reserved_ipv4:
+		env += f"RESERVED_IPV4={inputs.reserved_ipv4}\n"
+	return env
 
 
 def _jailer_launch(inputs: "ProvisionInputs", paths: VirtualMachinePaths) -> str:
