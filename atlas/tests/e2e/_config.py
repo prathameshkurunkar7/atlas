@@ -113,6 +113,54 @@ def get_ssh_private_key_path() -> str:
 	return spilled
 
 
+# Let's Encrypt staging — no rate limits, untrusted cert. The TLS e2e + the
+# bootstrap TLS tail default here so a full producer pass (LE → DNS-01 → certbot)
+# never burns production issuance quota. Override with atlas_acme_directory_url.
+LETS_ENCRYPT_STAGING = "https://acme-staging-v02.api.letsencrypt.org/directory"
+
+
+def get_tls_config() -> dict:
+	"""Read the Route 53 + ACME inputs the TLS layer needs from site config.
+
+	Mirrors the DO readers above (site config is the source of truth for the
+	harness). Raises `MissingConfig` naming the first absent key, so a site that
+	hasn't configured TLS skips the TLS e2e / bootstrap tail cleanly rather than
+	failing deep inside certbot.
+
+	Keys:
+	    atlas_tls_domain               the wildcard zone, e.g. blr1.frappe.dev
+	                                   (its Route 53 hosted zone must exist)
+	    atlas_route53_access_key_id    IAM key with route53:* on the zone
+	    atlas_route53_secret_access_key  …its secret
+	    atlas_acme_account_email       ACME registration / expiry-notice email
+	    atlas_acme_directory_url       optional; defaults to LE staging
+	"""
+	required = (
+		"atlas_tls_domain",
+		"atlas_route53_access_key_id",
+		"atlas_route53_secret_access_key",
+		"atlas_acme_account_email",
+	)
+	values = {}
+	for key in required:
+		value = frappe.conf.get(key)
+		if not value:
+			raise MissingConfig(
+				f"TLS e2e/bootstrap needs {key!r} in site config: "
+				f"bench --site <site> set-config -p {key} <value>"
+			)
+		values[key] = value
+	return {
+		"domain": values["atlas_tls_domain"],
+		"region": frappe.conf.get("atlas_tls_region", get_region()),
+		"access_key_id": values["atlas_route53_access_key_id"],
+		"secret_access_key": values["atlas_route53_secret_access_key"],
+		"account_email": values["atlas_acme_account_email"],
+		"acme_directory_url": frappe.conf.get("atlas_acme_directory_url", LETS_ENCRYPT_STAGING),
+		"aws_region": frappe.conf.get("atlas_route53_region", "us-east-1"),
+	}
+
+
 def get_region() -> str:
 	return frappe.conf.get("atlas_test_region", "blr1")
 

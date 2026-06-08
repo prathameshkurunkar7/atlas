@@ -153,9 +153,23 @@ and TLS ([13-tls.md](./13-tls.md)) setup on top:
    two providers); click **Issue / Renew Certificate** to issue the regional
    wildcard and push it onto every proxy VM in the region.
 
+To script steps 7-9, run [`atlas/bootstrap.py`](../atlas/bootstrap.py)'s TLS
+tail instead of clicking:
+
+```
+bench --site <site> execute atlas.bootstrap.run_with_proxy
+```
+
+`run_with_proxy` is `run` plus the TLS tail: it does the compute bootstrap, then
+— only if the `atlas_tls_domain` + Route 53 + ACME config keys are present —
+seeds the five domain/TLS rows and issues the regional wildcard (defaulting to
+Let's Encrypt **staging** so an unattended run never burns production quota; set
+`atlas_acme_directory_url` for a trusted cert). Absent those keys it skips the
+tail and behaves like `run`. The file's docstring lists every config key.
+
 The TLS layer has a **controller-host dependency**: `certbot`,
-`certbot-dns-route53`, and `openssl` must be installed on the Atlas controller
-(issuance runs there, not over SSH — see [13-tls.md](./13-tls.md)).
+`certbot-dns-route53`, `openssl`, and `boto3` must be installed on the Atlas
+controller (issuance runs there, not over SSH — see [13-tls.md](./13-tls.md)).
 
 ## Operator use cases
 
@@ -226,8 +240,9 @@ detail. The mapping is one module per use case under
 filenames mirror the table above (`server_provisioning.py`,
 `image_sync.py`, `virtual_machine_provisioning.py`,
 `virtual_machine_lifecycle.py`, `virtual_machine_snapshot.py`,
-`reserved_ip_inbound.py`, `run_task.py`, `desk_buttons.py`,
-`digitalocean_client.py`, `ssh_primitive.py`).
+`reserved_ip_inbound.py`, `proxy_vm.py`, `tls_issuance.py`,
+`run_task.py`, `desk_buttons.py`, `digitalocean_client.py`,
+`ssh_primitive.py`).
 
 Each use-case module is the **single source of truth** for that
 operation's end-to-end coverage. It owns:
@@ -322,7 +337,16 @@ runner families fall out of that split:
 The dedicated-droplet host facts — fresh provision
 (`server_provisioning.run`) and the DO round trip
 (`digitalocean_client.run_smoke`) — own their own droplets and are
-invoked directly, not folded into `run_all_smoke`.
+invoked directly, not folded into `run_all_smoke`. The TLS issuance use
+case (`tls_issuance.run_smoke`) is the same shape: it needs a live AWS
+Route 53 zone and a real ACME round trip on top of the proxy infra, so it
+is invoked directly and skips cleanly (raising `MissingConfig` before any
+billable provision) on a site without the `atlas_tls_*` config keys. It is
+the only e2e that exercises the real producer chain (Let's Encrypt →
+DNS-01 → certbot → `_push_to_proxies`); `proxy_vm` uses a self-signed
+stand-in cert. It needs the controller-host deps (certbot,
+certbot-dns-route53, openssl, boto3) and fails its preflight with a clear
+message if they are absent.
 
 Every e2e-created droplet is tagged `atlas-e2e`. The harness pre-sweep
 prints droplets older than 30 minutes so the operator can delete them

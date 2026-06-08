@@ -43,6 +43,28 @@ Optional VM inputs:
 
     atlas_vm_ssh_public_key       PEM contents or path to a public key
                                   (defaults to ~/.ssh/id_ed25519.pub)
+
+Optional TLS tail (run via `atlas.bootstrap.run_with_proxy`):
+
+`run()` stops at the first VM (compute only). `run_with_proxy()` runs `run()` and
+then, IF the TLS config keys below are all present, seeds the domain + TLS layer
+(Domain Provider, Route53 Settings, TLS Provider, Lets Encrypt Settings, Root
+Domain) and issues the regional wildcard via Let's Encrypt over Route 53 DNS-01 —
+the same chain the desk's **Issue / Renew Certificate** button drives. The cert is
+pushed to every proxy VM in the region (none yet at bootstrap, so the push is a
+no-op until a proxy exists). Requires certbot + certbot-dns-route53 + openssl +
+boto3 on the controller (spec/13-tls.md). If the keys are absent the tail is
+skipped with a printed note — `run_with_proxy` then behaves like `run`.
+
+    atlas_tls_domain                 the wildcard zone, e.g. blr1.frappe.dev
+                                     (its Route 53 hosted zone must already exist)
+    atlas_tls_region                 region the wildcard fronts (default: the DO region)
+    atlas_route53_access_key_id      IAM key with route53:* on the zone
+    atlas_route53_secret_access_key  …its secret
+    atlas_route53_region             AWS API region (default us-east-1)
+    atlas_acme_account_email         ACME registration / expiry-notice email
+    atlas_acme_directory_url         ACME directory (default: LE STAGING — set the
+                                     production URL for a trusted cert)
 """
 
 import os
@@ -54,6 +76,14 @@ import frappe.utils.password
 PROVIDER_NAME = "bootstrap-provider"
 IMAGE_NAME = "ubuntu-24.04"
 MINIMAL_IMAGE_NAME = "ubuntu-24.04-minimal"
+
+DOMAIN_PROVIDER_NAME = "bootstrap-route53"
+TLS_PROVIDER_NAME = "bootstrap-letsencrypt"
+
+# Let's Encrypt staging — no rate limits, untrusted cert. The TLS tail defaults
+# here so an unattended bootstrap never burns LE production issuance quota; set
+# atlas_acme_directory_url to the production URL for a trusted cert.
+LETS_ENCRYPT_STAGING = "https://acme-staging-v02.api.letsencrypt.org/directory"
 
 # Ubuntu cloud images (noble), pinned to a dated release for immutability.
 # The dated path never changes under us; the floating `release/` pointer does.
@@ -99,6 +129,25 @@ def run() -> None:
 	ensure_image()
 	sync_image(server_name)
 	provision_virtual_machine(server_name)
+
+
+def run_with_proxy() -> None:
+	"""`run()` plus the TLS tail: seed the domain + TLS layer and issue the regional
+	wildcard cert (see the module docstring for the config keys).
+
+	The compute bootstrap (`run`) always happens. The TLS tail runs only when the
+	`atlas_tls_domain` + Route 53 + ACME keys are all present; otherwise it prints a
+	note and returns — so this is a safe drop-in for `run` on any site."""
+	run()
+	tls_config = _read_tls_config()
+	if tls_config is None:
+		print(
+			"[bootstrap] no TLS config (atlas_tls_domain etc.) — skipping the TLS tail. "
+			"Compute bootstrap is complete."
+		)
+		return
+	ensure_tls_layer(tls_config)
+	issue_certificate(tls_config["domain"])
 
 
 def ensure_provider() -> "frappe.model.document.Document":
@@ -320,6 +369,100 @@ def wait_for_task(task_name: str, timeout_seconds: int) -> None:
 		frappe.throw(f"Task {task_name} did not finish within {timeout_seconds}s")
 	if task.status != "Success":
 		frappe.throw(f"Task {task_name} ended in {task.status}: {(task.stderr or '')[:500]}")
+
+
+# --- TLS tail ------------------------------------------------------------
+
+
+def _read_tls_config() -> dict | None:
+	"""Read the Route 53 + ACME inputs from site config, or None if the TLS tail
+	wasn't requested. Returns None only when `atlas_tls_domain` is unset (the
+	opt-in switch); if it's set but a companion key is missing we `throw`, because a
+	half-configured TLS tail is an operator mistake, not an opt-out."""
+	domain = frappe.conf.get("atlas_tls_domain")
+	if not domain:
+		return None
+	return {
+		"domain": domain,
+		"region": frappe.conf.get("atlas_tls_region") or require_config("atlas_do_region"),
+		"access_key_id": require_config("atlas_route53_access_key_id"),
+		"secret_access_key": require_config("atlas_route53_secret_access_key"),
+		"aws_region": frappe.conf.get("atlas_route53_region", "us-east-1"),
+		"account_email": require_config("atlas_acme_account_email"),
+		"acme_directory_url": frappe.conf.get("atlas_acme_directory_url", LETS_ENCRYPT_STAGING),
+	}
+
+
+def ensure_tls_layer(config: dict) -> None:
+	"""Seed the domain + TLS layer from config, idempotently — the same rows the
+	desk first-run order creates (spec/13-tls.md): Domain Provider, Route53
+	Settings, TLS Provider, Lets Encrypt Settings, Root Domain."""
+	import frappe.utils.password
+
+	frappe.db.set_single_value(
+		"Route53 Settings", "access_key_id", config["access_key_id"], update_modified=False
+	)
+	frappe.db.set_single_value("Route53 Settings", "region", config["aws_region"], update_modified=False)
+	frappe.utils.password.set_encrypted_password(
+		"Route53 Settings", "Route53 Settings", config["secret_access_key"], "secret_access_key"
+	)
+	frappe.db.set_single_value(
+		"Lets Encrypt Settings", "acme_directory_url", config["acme_directory_url"], update_modified=False
+	)
+	frappe.db.set_single_value(
+		"Lets Encrypt Settings", "account_email", config["account_email"], update_modified=False
+	)
+	frappe.db.set_single_value("Lets Encrypt Settings", "agree_tos", 1, update_modified=False)
+
+	if not frappe.db.exists("Domain Provider", DOMAIN_PROVIDER_NAME):
+		frappe.get_doc(
+			{
+				"doctype": "Domain Provider",
+				"provider_name": DOMAIN_PROVIDER_NAME,
+				"provider_type": "Route53",
+				"is_active": 1,
+			}
+		).insert(ignore_permissions=True)
+		print(f"[bootstrap] created Domain Provider {DOMAIN_PROVIDER_NAME!r}")
+	if not frappe.db.exists("TLS Provider", TLS_PROVIDER_NAME):
+		frappe.get_doc(
+			{
+				"doctype": "TLS Provider",
+				"provider_name": TLS_PROVIDER_NAME,
+				"provider_type": "Let's Encrypt",
+				"is_active": 1,
+			}
+		).insert(ignore_permissions=True)
+		print(f"[bootstrap] created TLS Provider {TLS_PROVIDER_NAME!r}")
+	if not frappe.db.exists("Root Domain", config["domain"]):
+		frappe.get_doc(
+			{
+				"doctype": "Root Domain",
+				"domain": config["domain"],
+				"region": config["region"],
+				"domain_provider": DOMAIN_PROVIDER_NAME,
+				"tls_provider": TLS_PROVIDER_NAME,
+				"is_active": 1,
+			}
+		).insert(ignore_permissions=True)
+		print(f"[bootstrap] created Root Domain {config['domain']!r} (region {config['region']!r})")
+	else:
+		print(f"[bootstrap] reusing Root Domain {config['domain']!r}")
+	frappe.db.commit()
+
+
+def issue_certificate(domain: str) -> str:
+	"""Click Issue / Renew Certificate on the Root Domain — issue the regional
+	wildcard via certbot DNS-01 (the producer chain) and push to any proxy VMs in
+	the region. Returns the TLS Certificate name."""
+	print(f"[bootstrap] issuing *.{domain} via Let's Encrypt over Route 53 DNS-01 ...")
+	cert_name = frappe.get_doc("Root Domain", domain).issue_certificate()
+	frappe.db.commit()
+	status, expires_on = frappe.db.get_value("TLS Certificate", cert_name, ["status", "expires_on"])
+	if status != "Active":
+		frappe.throw(f"TLS Certificate {cert_name} ended in status {status}, expected Active")
+	print(f"[bootstrap] issued {cert_name} for *.{domain} (status {status}, expires {expires_on})")
+	return cert_name
 
 
 def require_config(key: str) -> str:
