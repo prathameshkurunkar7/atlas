@@ -74,8 +74,11 @@ class TLSCertificate(Document):
 			{
 				"fullchain_path": issued.fullchain_path,
 				"privkey_path": issued.privkey_path,
-				"issued_on": issued.not_before,
-				"expires_on": issued.not_after,
+				# not_before/not_after arrive as raw OpenSSL date strings
+				# (`Jun  8 07:32:49 2026 GMT`); normalize to the Datetime columns'
+				# format, the step scripts/lib/atlas/certs.py documents.
+				"issued_on": frappe.utils.get_datetime(issued.not_before),
+				"expires_on": frappe.utils.get_datetime(issued.not_after),
 				"tls_provider": domain_row.tls_provider,
 				"status": "Active",
 			}

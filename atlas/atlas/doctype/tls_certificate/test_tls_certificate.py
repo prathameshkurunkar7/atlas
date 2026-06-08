@@ -90,11 +90,15 @@ class TestIssueAndPush(IntegrationTestCase):
 		self._tmp.cleanup()
 
 	def _issued(self) -> IssuedCert:
+		# not_before/not_after are RAW OpenSSL date strings, exactly as
+		# issue-cert.py emits them from `openssl x509 -dates` — NOT pre-normalized.
+		# The controller must parse these to its Datetime columns; a real LE issuance
+		# crashed MySQL with 'Incorrect datetime value' when it didn't.
 		return IssuedCert(
 			fullchain_path=str(self.fullchain),
 			privkey_path=str(self.privkey),
-			not_before="2026-06-08 00:00:00",
-			not_after="2026-09-06 00:00:00",
+			not_before="Jun  8 00:00:00 2026 GMT",
+			not_after="Sep  6 00:00:00 2026 GMT",
 		)
 
 	def test_issue_records_result_and_pushes_to_region_proxies(self) -> None:
@@ -118,6 +122,8 @@ class TestIssueAndPush(IntegrationTestCase):
 		cert.reload()
 		self.assertEqual(cert.status, "Active")
 		self.assertEqual(cert.fullchain_path, str(self.fullchain))
+		# The raw OpenSSL strings are normalized to the Datetime columns.
+		self.assertEqual(str(cert.issued_on), "2026-06-08 00:00:00")
 		self.assertEqual(str(cert.expires_on), "2026-09-06 00:00:00")
 
 		# push_cert called exactly for the two blr1 proxies, with the PEM BYTES.
