@@ -1,0 +1,95 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-06-06 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "tab_overview",
+  "key_name",
+  "fingerprint",
+  "section_break_key",
+  "public_key"
+ ],
+ "fields": [
+  {
+   "fieldname": "tab_overview",
+   "fieldtype": "Tab Break",
+   "label": "Overview"
+  },
+  {
+   "fieldname": "key_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_global_search": 1,
+   "label": "Name",
+   "reqd": 1
+  },
+  {
+   "description": "SHA-256 fingerprint, derived from the public key on save.",
+   "fieldname": "fingerprint",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Fingerprint",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_key",
+   "fieldtype": "Section Break",
+   "label": "Key"
+  },
+  {
+   "description": "OpenSSH public-key body (e.g. ssh-ed25519 AAAA... user@host).",
+   "fieldname": "public_key",
+   "fieldtype": "Long Text",
+   "label": "Public Key",
+   "reqd": 1,
+   "set_only_once": 1
+  }
+ ],
+ "links": [],
+ "modified": "2026-06-06 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Atlas",
+ "name": "SSH Key",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "amend": 0,
+   "cancel": 0,
+   "create": 1,
+   "delete": 1,
+   "export": 1,
+   "import": 0,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 0,
+   "write": 1
+  },
+  {
+   "amend": 0,
+   "cancel": 0,
+   "create": 1,
+   "delete": 1,
+   "export": 0,
+   "if_owner": 1,
+   "import": 0,
+   "read": 1,
+   "report": 0,
+   "role": "Atlas User",
+   "share": 0,
+   "submit": 0,
+   "write": 1
+  }
+ ],
+ "search_fields": "key_name,fingerprint",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "title_field": "key_name",
+ "track_changes": 1
+}

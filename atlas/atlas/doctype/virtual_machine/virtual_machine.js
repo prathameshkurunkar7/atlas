@@ -1,34 +1,39 @@
 const PRIMARY_BY_STATUS = {
-	Failed: {label: "Provision", method: "provision"},
-	Stopped: {label: "Start", method: "start"},
-	Running: {label: "Stop", method: "stop"},
-	Paused: {label: "Resume", method: "resume"},
+	Failed: { label: "Provision", method: "provision" },
+	Stopped: { label: "Start", method: "start" },
+	Running: { label: "Stop", method: "stop" },
+	Paused: { label: "Resume", method: "resume" },
 };
 
 // Plain no-arg lifecycle methods invoked through confirm_lifecycle.
 const SECONDARY_BY_STATUS = {
 	Running: [
-		{label: "Restart", method: "restart"},
-		{label: "Pause", method: "pause"},
+		{ label: "Restart", method: "restart" },
+		{ label: "Pause", method: "pause" },
 	],
-	Stopped: [{label: "Restart", method: "restart"}],
-	Paused: [{label: "Stop", method: "stop"}],
+	Stopped: [{ label: "Restart", method: "restart" }],
+	Paused: [{ label: "Stop", method: "stop" }],
 };
 
 // Stopped-only actions that open a dialog (they take arguments).
 const DIALOG_ACTIONS_WHEN_STOPPED = [
-	{label: "Snapshot", handler: open_snapshot_dialog},
-	{label: "Rebuild", handler: open_rebuild_dialog},
-	{label: "Resize", handler: open_resize_dialog},
+	{ label: "Snapshot", handler: open_snapshot_dialog },
+	{ label: "Rebuild", handler: open_rebuild_dialog },
+	{ label: "Resize", handler: open_resize_dialog },
 ];
 
-
+// Five tiers — keep in sync with atlas/atlas/sizes.py SIZE_PRESETS (the
+// canonical source) and the SPA's NewMachineDialog.vue. `vcpus` is the guest
+// thread count; `cpu_max_cores` is the cgroup cpu.max bandwidth cap. "Shared Nx"
+// are oversubscribable fractions of a core; "Dedicated 1x" is a full core.
+// test_sizes.py pins these in sync.
 const SIZE_PRESETS = {
-	"Small (1 vCPU / 512 MB / 4 GB)": {vcpus: 1, memory_megabytes: 512, disk_gigabytes: 4},
-	"Medium (2 vCPU / 2048 MB / 10 GB)": {vcpus: 2, memory_megabytes: 2048, disk_gigabytes: 10},
-	"Large (4 vCPU / 8192 MB / 40 GB)": {vcpus: 4, memory_megabytes: 8192, disk_gigabytes: 40},
+	"Shared 1x": { vcpus: 1, cpu_max_cores: 0.0625, memory_megabytes: 512, disk_gigabytes: 10 },
+	"Shared 2x": { vcpus: 1, cpu_max_cores: 0.125, memory_megabytes: 1024, disk_gigabytes: 20 },
+	"Shared 4x": { vcpus: 1, cpu_max_cores: 0.25, memory_megabytes: 2048, disk_gigabytes: 40 },
+	"Shared 8x": { vcpus: 1, cpu_max_cores: 0.5, memory_megabytes: 4096, disk_gigabytes: 80 },
+	"Dedicated 1x": { vcpus: 1, cpu_max_cores: 1, memory_megabytes: 8192, disk_gigabytes: 160 },
 };
-
 
 frappe.ui.form.on("Virtual Machine", {
 	onload(frm) {
@@ -50,25 +55,26 @@ frappe.ui.form.on("Virtual Machine", {
 		const preset = SIZE_PRESETS[frm.doc.size_preset];
 		if (!preset) return;
 		frm.set_value("vcpus", preset.vcpus);
+		frm.set_value("cpu_max_cores", preset.cpu_max_cores);
 		frm.set_value("memory_megabytes", preset.memory_megabytes);
 		frm.set_value("disk_gigabytes", preset.disk_gigabytes);
 	},
 });
 
-
 function auto_select_server(frm) {
 	if (frm.doc.server) return;
-	frappe.db.get_list("Server", {
-		filters: {status: "Active"},
-		pluck: "name",
-		limit: 2,
-	}).then((rows) => {
-		if (rows.length === 1) {
-			frm.set_value("server", rows[0]);
-		}
-	});
+	frappe.db
+		.get_list("Server", {
+			filters: { status: "Active" },
+			pluck: "name",
+			limit: 2,
+		})
+		.then((rows) => {
+			if (rows.length === 1) {
+				frm.set_value("server", rows[0]);
+			}
+		});
 }
-
 
 function add_lifecycle_buttons(frm) {
 	const status = frm.doc.status;
@@ -93,26 +99,26 @@ function add_lifecycle_buttons(frm) {
 	frappe.atlas.add_danger(frm, "Terminate", () => confirm_terminate(frm));
 }
 
-
 function add_terminated_actions(frm) {
 	if (frm.doc.status !== "Terminated") return;
 	frappe.atlas.add_primary(frm, "Re-provision as new", () => reprovision_as_new(frm));
 	frappe.atlas.add_danger(frm, "Delete record", () => confirm_delete(frm));
 }
 
-
 function confirm_lifecycle(frm, action) {
-	frappe.confirm(__("{0} {1}?", [action.label, frm.doc.title || frm.doc.name.slice(0, 8)]), () => {
-		frm.call(action.method).then(({message: task_name}) => {
-			if (typeof task_name === "string") {
-				frappe.atlas.task_started(frm, action.label, task_name);
-			} else {
-				frm.reload_doc();
-			}
-		});
-	});
+	frappe.confirm(
+		__("{0} {1}?", [action.label, frm.doc.title || frm.doc.name.slice(0, 8)]),
+		() => {
+			frm.call(action.method).then(({ message: task_name }) => {
+				if (typeof task_name === "string") {
+					frappe.atlas.task_started(frm, action.label, task_name);
+				} else {
+					frm.reload_doc();
+				}
+			});
+		}
+	);
 }
-
 
 function confirm_terminate(frm) {
 	const match = frm.doc.title || frm.doc.name;
@@ -123,13 +129,12 @@ function confirm_terminate(frm) {
 		match_label: __("Type the title to confirm"),
 		proceed_label: __("Terminate"),
 		proceed() {
-			frm.call("terminate").then(({message: task_name}) => {
+			frm.call("terminate").then(({ message: task_name }) => {
 				frappe.atlas.task_started(frm, "Terminate", task_name);
 			});
 		},
 	});
 }
-
 
 function confirm_delete(frm) {
 	const match = frm.doc.title || frm.doc.name;
@@ -151,7 +156,6 @@ function confirm_delete(frm) {
 	});
 }
 
-
 function reprovision_as_new(frm) {
 	const clone = frappe.new_doc("Virtual Machine", {
 		server: frm.doc.server,
@@ -169,14 +173,15 @@ function reprovision_as_new(frm) {
 	}
 }
 
-
 function maybe_alert_cloned() {
-	frappe.show_alert({
-		message: __("New Virtual Machine prefilled. Review and Save to insert."),
-		indicator: "blue",
-	}, 5);
+	frappe.show_alert(
+		{
+			message: __("New Virtual Machine prefilled. Review and Save to insert."),
+			indicator: "blue",
+		},
+		5
+	);
 }
-
 
 function open_snapshot_dialog(frm) {
 	frappe.prompt(
@@ -193,24 +198,26 @@ function open_snapshot_dialog(frm) {
 				fieldtype: "HTML",
 				options: `<p class="text-muted small">${__(
 					"Copies the whole {0} GB rootfs to a new snapshot file — up to a few minutes for a large disk.",
-					[frm.doc.disk_gigabytes],
+					[frm.doc.disk_gigabytes]
 				)}</p>`,
 			},
 		],
-		({title}) => {
-			frm.call("snapshot", {title}).then(({message: snapshot_name}) => {
-				frappe.show_alert({
-					message: __("Snapshot {0} created.", [snapshot_name]),
-					indicator: "green",
-				}, 6);
+		({ title }) => {
+			frm.call("snapshot", { title }).then(({ message: snapshot_name }) => {
+				frappe.show_alert(
+					{
+						message: __("Snapshot {0} created.", [snapshot_name]),
+						indicator: "green",
+					},
+					6
+				);
 				frm.reload_doc();
 			});
 		},
 		__("Snapshot {0}", [frm.doc.title || frm.doc.name.slice(0, 8)]),
-		__("Create snapshot"),
+		__("Create snapshot")
 	);
 }
-
 
 function open_rebuild_dialog(frm) {
 	const dialog = new frappe.ui.Dialog({
@@ -221,8 +228,8 @@ function open_rebuild_dialog(frm) {
 				label: __("Rebuild from"),
 				fieldtype: "Select",
 				options: [
-					{value: "image", label: __("Base image (fresh disk)")},
-					{value: "snapshot", label: __("A snapshot of this VM")},
+					{ value: "image", label: __("Base image (fresh disk)") },
+					{ value: "snapshot", label: __("A snapshot of this VM") },
 				],
 				default: "image",
 				reqd: 1,
@@ -243,14 +250,14 @@ function open_rebuild_dialog(frm) {
 				options: "Virtual Machine Snapshot",
 				depends_on: "eval:doc.source_type == 'snapshot'",
 				get_query: () => ({
-					filters: {virtual_machine: frm.doc.name, status: "Available"},
+					filters: { virtual_machine: frm.doc.name, status: "Available" },
 				}),
 			},
 			{
 				fieldname: "cost_hint",
 				fieldtype: "HTML",
 				options: `<p class="text-muted small">${__(
-					"Swaps this VM's disk bytes in place — current data is overwritten. Takes up to a few minutes; the VM stays Stopped.",
+					"Swaps this VM's disk bytes in place — current data is overwritten. Takes up to a few minutes; the VM stays Stopped."
 				)}</p>`,
 			},
 		],
@@ -263,8 +270,9 @@ function open_rebuild_dialog(frm) {
 				body_html: `<p>${__("This overwrites the VM's disk and cannot be undone.")}</p>`,
 				proceed_label: __("Rebuild"),
 				proceed() {
-					frm.call("rebuild", {source_type: values.source_type, source}).then(
-						({message: task_name}) => frappe.atlas.task_started(frm, "Rebuild", task_name),
+					frm.call("rebuild", { source_type: values.source_type, source }).then(
+						({ message: task_name }) =>
+							frappe.atlas.task_started(frm, "Rebuild", task_name)
 					);
 				},
 			});
@@ -272,7 +280,6 @@ function open_rebuild_dialog(frm) {
 	});
 	dialog.show();
 }
-
 
 function open_resize_dialog(frm) {
 	frappe.prompt(
@@ -303,20 +310,19 @@ function open_resize_dialog(frm) {
 				fieldname: "cost_hint",
 				fieldtype: "HTML",
 				options: `<p class="text-muted small">${__(
-					"Rewrites the Firecracker config and grows the rootfs — up to ~2 minutes. The VM stays Stopped.",
+					"Rewrites the Firecracker config and grows the rootfs — up to ~2 minutes. The VM stays Stopped."
 				)}</p>`,
 			},
 		],
 		(values) => {
-			frm.call("resize", values).then(({message: task_name}) =>
-				frappe.atlas.task_started(frm, "Resize", task_name),
+			frm.call("resize", values).then(({ message: task_name }) =>
+				frappe.atlas.task_started(frm, "Resize", task_name)
 			);
 		},
 		__("Resize {0}", [frm.doc.title || frm.doc.name.slice(0, 8)]),
-		__("Resize"),
+		__("Resize")
 	);
 }
-
 
 function render_status_intro(frm) {
 	frm.set_intro("");
@@ -327,39 +333,44 @@ function render_status_intro(frm) {
 	}
 
 	if (status === "Failed" || status === "Pending") {
-		frappe.db.get_list("Task", {
-			fields: ["name", "subject", "status", "modified", "script"],
-			filters: {
-				virtual_machine: frm.doc.name,
-				status: "Failure",
-				script: "provision-vm.sh",
-			},
-			order_by: "modified desc",
-			limit: 1,
-		}).then((rows) => {
-			if (!rows.length) return;
-			const failure = rows[0];
-			const subject = failure.subject || failure.name;
-			const link = `<a href="/app/task/${encodeURIComponent(failure.name)}">${frappe.utils.escape_html(subject)} →</a>`;
-			frm.set_intro(
-				__("Last Provision attempt failed — {0}. Fix the cause, then click Provision to retry.", [link]),
-				"red",
-			);
-		});
+		frappe.db
+			.get_list("Task", {
+				fields: ["name", "subject", "status", "modified", "script"],
+				filters: {
+					virtual_machine: frm.doc.name,
+					status: "Failure",
+					script: "provision-vm.sh",
+				},
+				order_by: "modified desc",
+				limit: 1,
+			})
+			.then((rows) => {
+				if (!rows.length) return;
+				const failure = rows[0];
+				const subject = failure.subject || failure.name;
+				const link = `<a href="/app/task/${encodeURIComponent(
+					failure.name
+				)}">${frappe.utils.escape_html(subject)} →</a>`;
+				frm.set_intro(
+					__(
+						"Last Provision attempt failed — {0}. Fix the cause, then click Provision to retry.",
+						[link]
+					),
+					"red"
+				);
+			});
 	}
 }
-
 
 function expand_networking_for_pending(frm) {
 	if (frm.doc.status !== "Pending" || !frm.doc.ipv6_address) return;
 	const section = (cur_frm?.layout?.sections || []).find(
-		(s) => s.df && s.df.fieldname === "section_break_networking",
+		(s) => s.df && s.df.fieldname === "section_break_networking"
 	);
 	if (section && typeof section.collapse === "function") {
 		section.collapse(false);
 	}
 }
-
 
 function subscribe_to_realtime(frm) {
 	if (frm._atlas_vm_realtime_registered) return;

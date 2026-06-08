@@ -49,6 +49,8 @@ class TestServerCapacity(IntegrationTestCase):
 		self.assertEqual(result["effective_vcpus"], 32, "budget is total x factor")
 
 	def test_used_vcpus_sums_non_terminated_vms(self) -> None:
+		# Whole-core VMs: cpu_max_cores defaults to vcpus, so the bandwidth sum
+		# equals the vcpu sum (1 + 2 = 3); the terminated 4-vCPU VM is excluded.
 		make_virtual_machine(self.server, self.image, vcpus=1)
 		make_virtual_machine(self.server, self.image, vcpus=2)
 		terminated = make_virtual_machine(self.server, self.image, vcpus=4)
@@ -57,6 +59,16 @@ class TestServerCapacity(IntegrationTestCase):
 		result = server_capacity.capacity_for_server(self.server.name)
 		self.assertEqual(result["used_vcpus"], 3)
 		self.assertEqual(result["virtual_machine_count"], 2)
+
+	def test_used_vcpus_sums_cpu_bandwidth_not_thread_count(self) -> None:
+		# Fractional sizes cost their bandwidth cap, not a whole vCPU each: four
+		# 1/16-vCPU VMs (each vcpus=1, cpu_max_cores=0.0625) cost 0.25 vCPU of
+		# budget, well under the server's total — not 4.
+		for _ in range(4):
+			make_virtual_machine(self.server, self.image, vcpus=1, cpu_max_cores=0.0625)
+		result = server_capacity.capacity_for_server(self.server.name)
+		self.assertAlmostEqual(result["used_vcpus"], 0.25)
+		self.assertEqual(result["virtual_machine_count"], 4)
 
 	def test_unknown_size_returns_none_total(self) -> None:
 		self.server.db_set("size", "s-unknown-slug")

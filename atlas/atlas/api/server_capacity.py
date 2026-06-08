@@ -5,9 +5,9 @@ so the operator can see oversubscription before clicking Provision. vCPU totals
 come from a small static dict keyed by DigitalOcean size slug — same maintenance
 model as `Provider Size.monthly_cost_usd`.
 
-Capacity is deliberately oversubscribable: a VM's `vcpus` is a bandwidth cap
-(cpu.max), not a pinned core, so a host can safely back more vCPUs than it
-physically has. The fleet-wide multiplier is `Atlas Settings.overprovision_factor`
+Capacity is deliberately oversubscribable: a VM's `cpu_max_cores` is a cgroup
+cpu.max bandwidth cap, not a pinned core, so a host can safely back more vCPUs
+than it physically has. The fleet-wide multiplier is `Atlas Settings.overprovision_factor`
 (default 1 — no oversubscription until the operator raises it). A size we don't
 recognize has *no* known total, so we report unlimited capacity and let
 placement put a VM there — the operator vouched for the host by marking it
@@ -50,8 +50,9 @@ def capacity_for_server(server: str) -> dict:
 	times `Atlas Settings.overprovision_factor` — the budget placement actually
 	checks against. Both are None when the Server's size slug isn't in the
 	static dict (self-managed hosts have no slug), which the client renders as
-	"—" and placement treats as unlimited. `used` sums `vcpus` of non-Terminated
-	VMs.
+	"—" and placement treats as unlimited. `used` sums the CPU bandwidth cap
+	(`cpu_max_cores`, falling back to `vcpus`) of non-Terminated VMs — the true
+	cost, so fractional-vCPU VMs don't each spend a whole vCPU of budget.
 	"""
 	size = frappe.db.get_value("Server", server, "size")
 	# Server.size is now a Link to Provider Size, stored as "{type}/{slug}".
@@ -62,9 +63,12 @@ def capacity_for_server(server: str) -> dict:
 	used_rows = frappe.get_all(
 		"Virtual Machine",
 		filters={"server": server, "status": ["!=", "Terminated"]},
-		fields=["vcpus"],
+		fields=["vcpus", "cpu_max_cores"],
 	)
-	used = sum(int(row.vcpus or 0) for row in used_rows)
+	# Sum the true CPU *bandwidth* cost (cpu_max_cores), not the guest thread
+	# count (vcpus): seven 1/16-vCPU VMs cost ~0.44 vCPU of budget, not 7. Older
+	# rows with no cpu_max_cores fall back to vcpus (whole-core behavior).
+	used = sum(float(row.cpu_max_cores or row.vcpus or 0) for row in used_rows)
 	return {
 		"server": server,
 		"size": size,

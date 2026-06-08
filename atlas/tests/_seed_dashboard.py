@@ -26,12 +26,12 @@ def _pick_server():
 
 
 VMS = [
-	# title, status, ipv6, vcpus, mem, disk, preset
-	("web-01", "Running", "2606:4700:4700::a1f3", 2, 2048, 10, "Medium (2 vCPU / 2048 MB / 10 GB)"),
-	("db-staging", "Stopped", "2606:4700:4700::77c2", 4, 8192, 40, "Large (4 vCPU / 8192 MB / 40 GB)"),
-	("build-box", "Pending", "", 1, 512, 4, "Small (1 vCPU / 512 MB / 4 GB)"),
-	("cache-02", "Paused", "2606:4700:4700::9b10", 1, 512, 4, "Small (1 vCPU / 512 MB / 4 GB)"),
-	("old-worker", "Terminated", "", 2, 2048, 10, "Medium (2 vCPU / 2048 MB / 10 GB)"),
+	# title, status, ipv6, vcpus, cpu_max_cores, mem, disk, preset
+	("web-01", "Running", "2606:4700:4700::a1f3", 1, 0.5, 4096, 80, "Shared 8x"),
+	("db-staging", "Stopped", "2606:4700:4700::77c2", 1, 1, 8192, 160, "Dedicated 1x"),
+	("build-box", "Pending", "", 1, 0.0625, 512, 10, "Shared 1x"),
+	("cache-02", "Paused", "2606:4700:4700::9b10", 1, 0.25, 2048, 40, "Shared 4x"),
+	("old-worker", "Terminated", "", 1, 0.125, 1024, 20, "Shared 2x"),
 ]
 
 
@@ -73,7 +73,7 @@ def _ensure_image():
 		doc.insert(ignore_permissions=True)
 
 
-def _insert_vm(server, title, status, ipv6, vcpus, mem, disk, preset):
+def _insert_vm(server, title, status, ipv6, vcpus, cpu_max_cores, mem, disk, preset):
 	name = frappe.generate_hash("vm", 10)
 	# ssh_command is a virtual field (computed from ipv6_address on read) — no
 	# column, so it is not part of the INSERT.
@@ -82,11 +82,11 @@ def _insert_vm(server, title, status, ipv6, vcpus, mem, disk, preset):
 		INSERT INTO `tabVirtual Machine`
 			(name, owner, creation, modified, modified_by, docstatus, idx,
 			 title, status, image, server, ipv6_address,
-			 size_preset, vcpus, memory_megabytes, disk_gigabytes, ssh_public_key)
+			 size_preset, vcpus, cpu_max_cores, memory_megabytes, disk_gigabytes, ssh_public_key)
 		VALUES
 			(%(name)s, %(owner)s, NOW(), NOW(), %(owner)s, 0, 0,
 			 %(title)s, %(status)s, %(image)s, %(server)s, %(ipv6)s,
-			 %(preset)s, %(vcpus)s, %(mem)s, %(disk)s, %(key)s)
+			 %(preset)s, %(vcpus)s, %(cpu_max_cores)s, %(mem)s, %(disk)s, %(key)s)
 		""",
 		{
 			"name": name,
@@ -98,6 +98,7 @@ def _insert_vm(server, title, status, ipv6, vcpus, mem, disk, preset):
 			"ipv6": ipv6,
 			"preset": preset,
 			"vcpus": vcpus,
+			"cpu_max_cores": cpu_max_cores,
 			"mem": mem,
 			"disk": disk,
 			"key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAISEEDdashboardtester",

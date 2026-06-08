@@ -96,6 +96,15 @@ behavior; they just keep doors open.
 
 ## Concrete next steps after this iteration
 
+- **Regenerate the jailer launcher on resize**. `resize-vm.py` rewrites
+  `firecracker.json` (`vcpu_count` / `mem_size_mib`) and grows the disk LV, but
+  does not regenerate the per-VM `jailer-launch.sh`, so a changed cgroup
+  `cpu.max` cap (`Virtual Machine.cpu_max_cores`, and the whole-core cap too)
+  only takes effect on the next re-provision, not the next Start. Have
+  `resize-vm.py` rewrite the launcher's `--cgroup cpu.max=…` line in the same
+  gesture (it already has the new values) so a resize applies the bandwidth cap
+  immediately. Additive; see [05 § Resize](./05-virtual-machine-lifecycle.md#resize).
+
 - **Stuck-task reaper**. A scheduled job that looks at Tasks in `Running`
   state older than 2× their declared timeout and marks them `Failure` with
   a synthetic "worker presumed dead" note. The e2e harness already does

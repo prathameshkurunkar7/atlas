@@ -1,6 +1,6 @@
 # DocTypes
 
-Nineteen DocTypes. Module `Atlas`. None are submittable. All track changes.
+Twenty DocTypes. Module `Atlas`. None are submittable. All track changes.
 Read permission for `System Manager`.
 
 1. [Atlas Settings](#atlas-settings) — vendor-agnostic Atlas config (Single).
@@ -15,13 +15,14 @@ Read permission for `System Manager`.
 10. [Virtual Machine Snapshot](#virtual-machine-snapshot) — a disk snapshot of a VM.
 11. [Reserved IP](#reserved-ip) — a public IPv4 allocated to a Server, optionally attached to a VM.
 12. [Subdomain](#subdomain) — a `<subdomain>.<region>.frappe.dev` routing entry pointing at a site VM.
-13. [Task](#task)
-14. [Domain Provider](#domain-provider) — one row per configured DNS vendor (DNS-01).
-15. [Route53 Settings](#route53-settings) — AWS Route 53 API config (Single).
-16. [TLS Provider](#tls-provider) — one row per configured certificate issuer.
-17. [Lets Encrypt Settings](#lets-encrypt-settings) — ACME account config (Single).
-18. [Root Domain](#root-domain) — one wildcard zone == one region.
-19. [TLS Certificate](#tls-certificate) — the issued regional wildcard cert.
+13. [SSH Key](#ssh-key) — a user's public key, chosen when creating a VM.
+14. [Task](#task)
+15. [Domain Provider](#domain-provider) — one row per configured DNS vendor (DNS-01).
+16. [Route53 Settings](#route53-settings) — AWS Route 53 API config (Single).
+17. [TLS Provider](#tls-provider) — one row per configured certificate issuer.
+18. [Lets Encrypt Settings](#lets-encrypt-settings) — ACME account config (Single).
+19. [Root Domain](#root-domain) — one wildcard zone == one region.
+20. [TLS Certificate](#tls-certificate) — the issued regional wildcard cert.
 
 The first six form the **Provider abstraction**: a single ABC in
 `atlas/atlas/providers/base.py` with one implementation per
@@ -30,7 +31,7 @@ controllers never branch on `provider_type`. See
 [provider-abstraction.md](../llm/plan/provider-abstraction.md) for the
 implementation plan.
 
-DocTypes 14–19 form the **TLS & Domain layer** ([13-tls.md](./13-tls.md)) — the
+DocTypes 15–20 form the **TLS & Domain layer** ([13-tls.md](./13-tls.md)) — the
 producer for the proxy's `push_cert`. They mirror the Provider shape with two
 more registries: `atlas/atlas/dns/` (a `DnsProvider` ABC per `Domain
 Provider.provider_type`) and `atlas/atlas/tls/` (a `TlsProvider` ABC per `TLS
@@ -420,7 +421,8 @@ deletion.
 | `server`           | Link → Server                 | Y    |           |         | `set_only_once` (in addition to the controller's `_validate_immutability`). |
 | `image`            | Link → Virtual Machine Image  | Y    |           |         | `set_only_once` (in addition to the controller's `_validate_immutability`). |
 | `status`           | Select                        | Y    | Y         | Pending | `Pending`, `Running`, `Paused`, `Stopped`, `Failed`, `Terminated`. Driven by lifecycle methods only. |
-| `vcpus`            | Int                           | Y    |           | 1       | Frozen on ordinary saves; mutable via `resize()` on a Stopped VM. No `set_only_once` (the controller is the gate). |
+| `vcpus`            | Int                           | Y    |           | 1       | Guest `vcpu_count` — the number of vCPU threads Firecracker boots. Whole number ≥ 1 (a guest can't boot on a fractional thread count); it is also what server-capacity accounting sums for the thread budget. CPU *bandwidth* below or at one core is set by `cpu_max_cores`, not here. Frozen on ordinary saves; mutable via `resize()` on a Stopped VM. No `set_only_once` (the controller is the gate). |
+| `cpu_max_cores`    | Float                         | Y    |           | 1       | cgroup `cpu.max` bandwidth cap in whole-core units (see [networking.cgroup_args](../atlas/atlas/networking.py)). Fractional for sub-1 sizes: `0.0625` is 1/16 of a core. Defaults to `vcpus` (whole-core behavior) when a caller sets only `vcpus` — the operator desk path, the bootstrap seed, direct API. The size presets ([sizes.py](../atlas/atlas/sizes.py)) set both. Same resize rule as `vcpus`; the bandwidth cap is baked into the per-VM jailer launcher at provision time, so a changed cap takes effect on re-provision (see [05 § Resize](./05-virtual-machine-lifecycle.md#resize)). |
 | `memory_megabytes` | Int                           | Y    |           | 512     | Same resize rule as `vcpus`.                                     |
 | `disk_gigabytes`   | Int                           | Y    |           | 4       | Same resize rule. Resize may only grow it.                       |
 | `ssh_public_key`   | Long Text                     | Y    |           |         | `set_only_once`. Injected into the rootfs.                       |
@@ -472,6 +474,7 @@ image
 | status
 ── Resources ──
 vcpus
+cpu_max_cores
 | memory_megabytes
 | disk_gigabytes
 ── Security ── (collapsible)
@@ -517,7 +520,10 @@ Tiering is keyed off `status` — see [10-desk-ui.md § Virtual Machine](./10-de
   dialog) — disk and size operations; see
   [05-virtual-machine-lifecycle.md](./05-virtual-machine-lifecycle.md). They
   appear only while Stopped, which is the deterrent against resizing or
-  snapshotting a live VM (the controllers also enforce it).
+  snapshotting a live VM (the controllers also enforce it). The Snapshot
+  dialog's name is optional and pre-filled with `<vm title> — <timestamp>`;
+  `snapshot(title)` defaults to the same when `title` is omitted, so a caller
+  need not invent a name.
 - **Terminate** (under `Actions ▾`, danger; available until
   `Terminated`) — runs
   [`scripts/terminate-vm.py`](../scripts/terminate-vm.py), sets
@@ -863,6 +869,57 @@ virtual_machine
 
 - Columns: `subdomain`, `region`, `active`, `virtual_machine`, `address`.
 - Standard filters: `region`, `active`, `virtual_machine`.
+
+---
+
+## SSH Key
+
+A public SSH key a dashboard user registers once and chooses when creating a
+Virtual Machine. Per-user owned (Frappe's built-in `owner`), like
+`Virtual Machine` — a user sees and manages only their own keys, enforced at
+the permission layer (see [11-user-ui.md](./11-user-ui.md)). It is pure data:
+no Tasks, no lifecycle methods.
+
+The VM's own `ssh_public_key` (immutable, injected into the rootfs) stays the
+source of truth for provisioning. The dashboard copies the chosen key's
+`public_key` body into the VM on create — so this DocType adds nothing to the
+provisioning path; it is a user-facing convenience over the existing field.
+
+### Fields
+
+| Field         | Type      | Reqd | Read-only | Notes                                                            |
+| ------------- | --------- | ---- | --------- | ---------------------------------------------------------------- |
+| `name`        | (autoname `hash`) | Y | Y     |           | Primary key. 10-char random hex.                                 |
+| `key_name`    | Data      | Y    |           | `title_field`. User-chosen label (e.g. `laptop`).                |
+| `public_key`  | Long Text | Y    |           | `set_only_once`. OpenSSH public-key body. `validate()` strips it and rejects anything whose first token isn't a known key type (`ssh-ed25519`, `ssh-rsa`, `ecdsa-*`, `sk-*`). |
+| `fingerprint` | Data      |      | Y         | Derived in `validate()` from `public_key` — the standard `SHA256:<base64nopad>` form `ssh-keygen -lf` prints. Shown so the SPA can render a recognizable key identity without echoing the whole blob. |
+
+### Form layout
+
+```
+── Overview ──
+key_name
+fingerprint
+── Key ──
+public_key
+```
+
+### List view
+
+- Columns: `key_name`, `fingerprint`.
+- No standard filters (a user's key list is short).
+
+### Permissions
+
+System Manager: all rows, all perms. `Atlas User`: `if_owner`
+read/write/create/delete — their own keys only. Scoped by
+`permission_query_conditions` (`permissions.owner_only`, wired in `hooks.py`),
+the same mechanism as Virtual Machine.
+
+### Buttons
+
+None. The form is data-entry only; the SPA's SSH Keys page (and the New Machine
+dialog's inline add) drive creation and deletion through the standard endpoints.
 
 ---
 

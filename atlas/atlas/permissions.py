@@ -23,7 +23,7 @@ import frappe
 OPERATOR_ROLE = "System Manager"
 
 # DocTypes whose rows a user owns directly via Frappe's `owner` column.
-_OWNED_DOCTYPES = ("Virtual Machine", "Virtual Machine Snapshot")
+_OWNED_DOCTYPES = ("Virtual Machine", "Virtual Machine Snapshot", "SSH Key")
 
 
 def _is_operator(user: str) -> bool:
@@ -33,9 +33,9 @@ def _is_operator(user: str) -> bool:
 def owner_only(user: str | None = None, doctype: str | None = None) -> str:
 	"""Restrict an owned doctype's list to the current user's own rows.
 
-	Wired for Virtual Machine and Virtual Machine Snapshot. Operators are
-	unrestricted (empty string). The doctype is supplied by Frappe so one
-	function serves both — see frappe/database/query.py
+	Wired for Virtual Machine, Virtual Machine Snapshot, and SSH Key. Operators
+	are unrestricted (empty string). The doctype is supplied by Frappe so one
+	function serves all — see frappe/database/query.py
 	get_permission_query_conditions."""
 	user = user or frappe.session.user
 	if _is_operator(user):

@@ -33,6 +33,7 @@ IMMUTABLE_AFTER_INSERT = (
 # `flags.resizing` so validate() lets these through.
 RESIZE_MUTABLE = (
 	"vcpus",
+	"cpu_max_cores",
 	"memory_megabytes",
 	"disk_gigabytes",
 )
@@ -79,8 +80,18 @@ class VirtualMachine(Document):
 	def before_validate(self) -> None:
 		if not self.is_new():
 			return
+		self.set_cpu_max_cores_default()
 		self.set_mac_address()
 		self.set_tap_device()
+
+	def set_cpu_max_cores_default(self) -> None:
+		# cpu_max_cores is the cgroup cpu.max bandwidth cap; vcpus is the guest
+		# thread count. A caller who sets only vcpus (the operator desk path, the
+		# bootstrap seed, direct API) wants whole-core bandwidth — default the cap
+		# to vcpus so those VMs behave exactly as before this field existed. The
+		# size presets set both explicitly (fractional caps for sub-1 sizes).
+		if not self.cpu_max_cores:
+			self.cpu_max_cores = float(self.vcpus or 1)
 
 	def set_status_default(self) -> None:
 		if not self.status:
@@ -210,15 +221,21 @@ class VirtualMachine(Document):
 		return task.name
 
 	@frappe.whitelist()
-	def snapshot(self, title: str) -> str:
+	def snapshot(self, title: str | None = None) -> str:
 		"""Copy the rootfs of this Stopped VM into a new Virtual Machine
 		Snapshot row. Returns the snapshot's name.
+
+		`title` is optional: omitted, it defaults to `<vm title> — <timestamp>`,
+		so a caller (the SPA's one-click snapshot, or a direct API call) need not
+		invent a name. The dashboard pre-fills the same default but lets the user
+		edit it.
 
 		Stopped-only because copying a mounted/live ext4 risks a torn
 		filesystem; a cleanly unmounted rootfs copies consistently. The
 		operator stops first (the form offers the prompt)."""
 		if self.status != "Stopped":
 			frappe.throw(f"Stop the VM before snapshotting (status is {self.status})")
+		title = (title or "").strip() or self._default_snapshot_title()
 		snapshot = frappe.get_doc(
 			{
 				"doctype": "Virtual Machine Snapshot",
@@ -259,6 +276,11 @@ class VirtualMachine(Document):
 			}
 		)
 		return snapshot.name
+
+	def _default_snapshot_title(self) -> str:
+		"""`<vm title> — <YYYY-MM-DD HH:mm>` for an unnamed snapshot."""
+		stamp = frappe.utils.now_datetime().strftime("%Y-%m-%d %H:%M")
+		return f"{self.title} — {stamp}"
 
 	@frappe.whitelist()
 	def rebuild(self, source_type: str, source: str | None = None) -> str:
@@ -321,21 +343,34 @@ class VirtualMachine(Document):
 	def resize(
 		self,
 		vcpus: int | None = None,
+		cpu_max_cores: float | None = None,
 		memory_megabytes: int | None = None,
 		disk_gigabytes: int | None = None,
 	) -> str:
-		"""Change vCPU / memory / disk on a Stopped VM.
+		"""Change vCPU / CPU bandwidth / memory / disk on a Stopped VM.
 
 		Firecracker can't resize a running VM (machine-config is pre-boot
 		only), so the operator stops first. Disk may only grow — ext4 shrink
 		is unsafe and the on-host rootfs is already that large. The new values
 		are persisted, then resize-vm.py rewrites the firecracker config and
-		grows the rootfs to match. The VM stays Stopped."""
+		grows the rootfs to match. The VM stays Stopped.
+
+		`cpu_max_cores` is the cgroup cpu.max bandwidth cap (distinct from
+		`vcpus`, the guest vcpu_count). resize-vm.py rewrites firecracker.json
+		(vcpu_count/mem) and grows the disk, but does NOT regenerate the per-VM
+		jailer launcher — so a new cpu.max cap takes effect on the next
+		re-provision, not on the next Start (the same pre-existing behavior the
+		whole-core cpu.max cap already has). We still persist the new cap so the
+		doc stays the source of truth and capacity accounting is correct. When
+		the caller changes vcpus but leaves cpu_max_cores unset, keep the cap in
+		step for a whole-core VM (cap == old vcpus); otherwise the explicit cap
+		(or the unchanged fractional one) stands."""
 		if self.status != "Stopped":
 			frappe.throw(f"Stop the VM before resizing (status is {self.status})")
 		new_vcpus = int(vcpus) if vcpus else self.vcpus
 		new_memory = int(memory_megabytes) if memory_megabytes else self.memory_megabytes
 		new_disk = int(disk_gigabytes) if disk_gigabytes else self.disk_gigabytes
+		new_cpu_max = self._resolve_resize_cpu_max(cpu_max_cores, new_vcpus)
 		if new_disk < self.disk_gigabytes:
 			frappe.throw(f"Disk can only grow: {self.disk_gigabytes} GB → {new_disk} GB is a shrink")
 		# Run the on-host resize first; run_task raises on failure, so we only
@@ -356,11 +391,25 @@ class VirtualMachine(Document):
 			timeout_seconds=120,
 		)
 		self.vcpus = new_vcpus
+		self.cpu_max_cores = new_cpu_max
 		self.memory_megabytes = new_memory
 		self.disk_gigabytes = new_disk
 		self.flags.resizing = True
 		self.save()
 		return task.name
+
+	def _resolve_resize_cpu_max(self, cpu_max_cores: float | None, new_vcpus: int) -> float:
+		"""The cpu_max_cores to persist on a resize.
+
+		An explicit value wins. Otherwise, when the VM was whole-core (cap ==
+		current vcpus) and the resize changes vcpus, track the new vcpus so a
+		whole-core VM stays whole-core. A fractional VM (cap != vcpus) keeps its
+		cap untouched unless the caller passes a new one."""
+		if cpu_max_cores:
+			return float(cpu_max_cores)
+		if self.cpu_max_cores == float(self.vcpus):
+			return float(new_vcpus)
+		return float(self.cpu_max_cores)
 
 	@frappe.whitelist()
 	def terminate(self) -> str:
@@ -442,7 +491,9 @@ class VirtualMachine(Document):
 			# per-VM launcher. A value with an internal space (cpu.max's "<quota>
 			# <period>") is one argv token end to end — no systemd word-splitting,
 			# so the shell's newline-join + mapfile workaround is gone.
-			"CGROUP_ARG": _cgroup_values(cgroup_args(self.vcpus, self.memory_megabytes, self.disk_gigabytes)),
+			"CGROUP_ARG": _cgroup_values(
+				cgroup_args(self.cpu_max_cores, self.memory_megabytes, self.disk_gigabytes)
+			),
 			"RESOURCE_ARG": _cgroup_values(resource_limit_args(self.disk_gigabytes)),
 			# Per-VM NAT44 v4 egress link (host/guest /30 + gateway).
 			**self._ipv4_link_variables(),

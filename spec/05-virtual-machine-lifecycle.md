@@ -243,7 +243,10 @@ reaching it — `curl --unix-socket` talks to it from the host as before.
 
 ## Snapshot
 
-`Virtual Machine.snapshot(title)` on a **Stopped** VM. Runs
+`Virtual Machine.snapshot(title=None)` on a **Stopped** VM. `title` is optional:
+omitted (or blank), it defaults to `<vm title> — <YYYY-MM-DD HH:mm>`, so a
+caller — the SPA's one-click snapshot, or a direct API call — need not invent a
+name. The dashboard pre-fills the same default but lets the user edit it. Runs
 [`snapshot-vm.py`](../scripts/snapshot-vm.py):
 
 1. Pre-flight thin-pool check — refuse if the pool's `data_percent` or
@@ -314,9 +317,9 @@ snapshot's size and can only grow.
 
 ## Resize
 
-`Virtual Machine.resize(vcpus, memory_megabytes, disk_gigabytes)` on a
-**Stopped** VM. Firecracker reads `/machine-config` only at boot, so resize is
-stop-required; the next Start picks up the new config. Runs
+`Virtual Machine.resize(vcpus, cpu_max_cores, memory_megabytes, disk_gigabytes)`
+on a **Stopped** VM. Firecracker reads `/machine-config` only at boot, so resize
+is stop-required; the next Start picks up the new config. Runs
 [`resize-vm.py`](../scripts/resize-vm.py): `jq`-edit `vcpu_count` /
 `mem_size_mib` in `firecracker.json`, then `lvextend -r` the disk LV to the new
 size (grows the LV and the ext4 on it in one shot). Disk may only **grow** —
@@ -324,6 +327,20 @@ size (grows the LV and the ext4 on it in one shot). Disk may only **grow** —
 Unspecified fields keep their current value. The new
 values are persisted on the row through a guarded path (see
 [Why resource fields are frozen outside resize](#why-resource-fields-are-frozen-outside-resize)).
+
+**`cpu_max_cores` and the re-provision gap.** `cpu_max_cores` is the cgroup
+`cpu.max` bandwidth cap (distinct from `vcpus`, the guest `vcpu_count`). It is
+baked into the per-VM jailer launcher at provision time — `resize-vm.py` rewrites
+`firecracker.json` and grows the disk but does **not** regenerate the launcher,
+so a changed bandwidth cap takes effect on the next **re-provision**, not the
+next Start. This is the pre-existing behavior the whole-core `cpu.max` cap
+already has (a `vcpus` resize never rewrote the launcher either); `cpu_max_cores`
+just makes it explicit. `resize()` still persists the new cap so the doc stays
+the source of truth and capacity accounting is correct, and keeps a whole-core
+VM whole-core when `vcpus` changes without an explicit cap. Regenerating the
+launcher on resize is a named follow-up (see [09-roadmap.md](./09-roadmap.md)).
+The dashboard's Resize dialog stays vCPU / memory / disk; `cpu_max_cores` is set
+from a size preset at create.
 
 ## Terminate
 

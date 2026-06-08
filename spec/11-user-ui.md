@@ -9,8 +9,9 @@ Atlas has two audiences with two UIs:
   servers, image sync, ad-hoc tasks, capacity. Unchanged — see
   [10-desk-ui.md](./10-desk-ui.md).
 - **Users** use a **frappe-ui single-page app at `/dashboard`**. They see and
-  operate **only their own** Virtual Machines, Images (read-only, shared), and
-  Snapshots. They never see Provider, Server, or Task as surfaces.
+  operate **only their own** Virtual Machines, Snapshots, and SSH Keys, plus
+  Images (read-only, shared). They never see Provider, Server, or Task as
+  surfaces.
 
 This is a deliberate, documented reversal of the original PoC stance ("Desk is
 the UI; no web UI of our own"). The reversal is scoped: Desk stays the
@@ -36,6 +37,7 @@ hand is refused.
 | ------------------------ | ------------------------- | ------------------------------------------- |
 | Virtual Machine          | all rows, all perms       | **own rows** (`if_owner`): read/write/create/delete |
 | Virtual Machine Snapshot | all rows, all perms       | **own rows** (`if_owner`): read/create/delete |
+| SSH Key                  | all rows, all perms       | **own rows** (`if_owner`): read/write/create/delete |
 | Virtual Machine Image    | all rows, all perms       | **read, all rows** (shared base images)     |
 | Task                     | all rows (read; no delete)| **read, only Tasks of an owned VM**         |
 | Provider / Server        | all rows, all perms       | **no access**                               |
@@ -46,10 +48,11 @@ Mechanics (all in `atlas/atlas/permissions.py`, wired in `hooks.py`):
 
 - **Ownership = Frappe's built-in `owner`.** No owner field is added; Frappe
   stamps `owner` on insert. A user owns the VMs/Snapshots they create.
-- **`if_owner: 1`** permission rows on Virtual Machine and Virtual Machine
-  Snapshot for the `Atlas User` role restrict the user to their own rows.
+- **`if_owner: 1`** permission rows on Virtual Machine, Virtual Machine
+  Snapshot, and SSH Key for the `Atlas User` role restrict the user to their own
+  rows.
 - **`permission_query_conditions`** scope list views / `get_list`:
-  - Virtual Machine, Virtual Machine Snapshot → `owner = <user>`.
+  - Virtual Machine, Virtual Machine Snapshot, SSH Key → `owner = <user>`.
   - Task → only Tasks whose `virtual_machine` is owned by the user.
   - System Manager → unrestricted (empty condition).
 - **`has_permission` on Task** guards single-document reads: a user may read a
@@ -148,10 +151,10 @@ the documented exceptions, not licence to hand-roll anything else.
 
 Screens (wireframes in [`ui/wireframes.md`](../ui/wireframes.md)):
 
-1. **App shell** — the library `Sidebar` with three nav items (Machines,
-   Images, Snapshots); the `SidebarHeader` menu = Log out. (The header-vs-footer
-   placement of Log out follows the standard `SidebarHeader` idiom; a
-   `#footer-items` dropdown is the fallback if a footer is preferred.)
+1. **App shell** — the library `Sidebar` with four nav items (Machines,
+   Images, Snapshots, SSH Keys); the `SidebarHeader` menu = Log out. (The
+   header-vs-footer placement of Log out follows the standard `SidebarHeader`
+   idiom; a `#footer-items` dropdown is the fallback if a footer is preferred.)
 2. **Machines list** — column-aligned rows, status badge, IPv6 copy chip; one
    primary `New Machine` (the header button when populated; `ListView`'s
    built-in empty-state button when empty).
@@ -162,11 +165,21 @@ Screens (wireframes in [`ui/wireframes.md`](../ui/wireframes.md)):
    (name) and Resize (vCPU/memory/disk) are form dialogs (`MachineActionDialog`).
    All lifecycle calls go through `useDoctype('Virtual Machine').runDocMethod`;
    Delete through `.delete`.
-4. **New Machine dialog** — four fields (Name, Image, Size preset, SSH key); the
-   user picks the base image from the Active shared images, the server is placed
-   automatically; inserts a Virtual Machine via the standard endpoint;
+4. **New Machine dialog** — four fields (Name, Image, Size preset, SSH key). The
+   user picks the base image from the Active shared images and a size from the
+   five tiers (Shared 1x/2x/4x/8x, Dedicated 1x; default Shared 1x); the server
+   is placed automatically. **SSH key** is a *picker
+   over the user's own SSH Keys* (not a raw paste), with an inline "add a new
+   key" affordance so a first-time user with no keys is never stuck — the new
+   key inserts via the standard `SSH Key` endpoint, then is selected. On create,
+   the chosen key's `public_key` body is copied into the VM's immutable
+   `ssh_public_key`. Inserts a Virtual Machine via the standard endpoint;
    auto-provision boots it.
 5. **Images / Snapshots lists** — read-mostly, same aligned shape.
+6. **SSH Keys list** — the user's own keys (name + fingerprint), with an
+   **Add SSH key** primary (a `Dialog` naming + pasting the key) and a per-row
+   Delete (`confirmDialog`). Same aligned `ResourceList` shape; both mutations
+   go through the standard `useDoctype('SSH Key')` `insert` / `delete`.
 
 Design constraints (also the review bar): one primary action per page; color
 encodes state only; few words; alignment down every list; consistent spacing;
@@ -176,12 +189,13 @@ borders only where they signal something.
 
 A user gets a new surface, so a new e2e use-case module
 `atlas/tests/e2e/use_cases/user_dashboard.py` proves the bar: a non-operator
-`Atlas User`, driving the same standard endpoints the SPA posts to, creates +
-provisions a VM (placement filled, `owner` stamped, auto-provision boots it),
-reaches it (IPv6 + operator key — the existing reachability bar), reads its
-Tasks inline, and is **denied** another user's VM and all of
-Provider/Server/global-Task. Unit tests in `test_permissions.py` pin the
-permission contract in milliseconds.
+`Atlas User`, driving the same standard endpoints the SPA posts to, registers an
+`SSH Key`, creates + provisions a VM with it (placement filled, `owner` stamped,
+auto-provision boots it), reaches it (IPv6 + that key — the existing
+reachability bar), reads its Tasks inline, and is **denied** another user's VM /
+SSH Key and all of Provider/Server/global-Task. Unit tests in
+`test_permissions.py` (SSH Key `if_owner` scoping) and `test_ssh_key.py` (key
+validation + fingerprint) pin the contract in milliseconds.
 
 ## Deferred (named, not half-built)
 
@@ -189,7 +203,13 @@ permission contract in milliseconds.
   (Gameplan/CRM style) is a follow-up if multiple users must share a VM.
 - **Browser / Playwright e2e** — the bar is proven at the API level as the
   user; pixel-level proof is a follow-up.
-- **User-facing image creation, custom sizes** — users get three size presets
-  and read-only shared images; building images and custom sizing stay
-  operator-only.
-- **In-SPA settings / key rotation** — the footer is Log out only.
+- **User-facing image creation, free-form sizes** — users get five size tiers
+  (Shared 1x/2x/4x/8x — oversubscribable fractions of a core, 512 MB up — and
+  Dedicated 1x, a full core with 8 GB; see [sizes.py](../atlas/atlas/sizes.py))
+  and read-only shared images. Building images and free-form (non-preset) sizing
+  stay operator-only.
+- **SSH key rotation on an existing VM** — a key is immutable on the rootfs
+  (`ssh_public_key` is `set_only_once`), so the SSH Keys page adds/removes keys
+  from the *account* but does not re-key a running machine. Re-keying a VM is a
+  follow-up; today it means terminate + recreate.
+- **In-SPA settings** — the header menu is Log out only.

@@ -30,13 +30,23 @@ class VirtualMachineSnapshot(Document):
 			frappe.throw(
 				f"Clone disk ({disk} GB) cannot be smaller than the snapshot ({self.disk_gigabytes} GB)"
 			)
+		new_vcpus = int(vcpus) if vcpus else source_vm.vcpus
+		# Inherit the source's CPU bandwidth cap. When vcpus is overridden but the
+		# source was whole-core, track the new vcpus; otherwise carry the source's
+		# cap so a fractional source clones to the same fraction (before_validate
+		# would otherwise default a missing cap up to vcpus).
+		if source_vm.cpu_max_cores == float(source_vm.vcpus):
+			clone_cpu_max = float(new_vcpus)
+		else:
+			clone_cpu_max = float(source_vm.cpu_max_cores)
 		clone = frappe.get_doc(
 			{
 				"doctype": "Virtual Machine",
 				"title": title,
 				"server": source_vm.server,
 				"image": self.source_image,
-				"vcpus": int(vcpus) if vcpus else source_vm.vcpus,
+				"vcpus": new_vcpus,
+				"cpu_max_cores": clone_cpu_max,
 				"memory_megabytes": int(memory_megabytes) if memory_megabytes else source_vm.memory_megabytes,
 				"disk_gigabytes": disk,
 				"ssh_public_key": ssh_public_key,

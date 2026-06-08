@@ -180,8 +180,9 @@ class TestNetworking(IntegrationTestCase):
 			self.assertTrue(ns_veth.startswith("atlas-n"))
 
 	def test_cgroup_args_for_resource_triple(self) -> None:
-		# 2 vCPU, 1024 MiB RAM, 8 GiB disk.
-		args = cgroup_args(vcpus=2, memory_megabytes=1024, disk_gigabytes=8)
+		# 2 cores' bandwidth, 1024 MiB RAM, 8 GiB disk. cpu_max_cores=2 →
+		# cpu.max quota 2*100000.
+		args = cgroup_args(cpu_max_cores=2, memory_megabytes=1024, disk_gigabytes=8)
 		expected_mem = (1024 + MEMORY_HEADROOM_MIB) * 1024 * 1024
 		self.assertEqual(
 			args,
@@ -194,6 +195,16 @@ class TestNetworking(IntegrationTestCase):
 				"cpu.max=200000 100000",
 			],
 		)
+
+	def test_cgroup_args_fractional_cpu_cap(self) -> None:
+		# A sub-1 size: 1/16 of a core → cpu.max quota round(0.0625 * 100000) =
+		# 6250, period 100000. This is the bandwidth cap; the guest still boots
+		# with one vcpu_count thread (set from `vcpus`, not here).
+		args = cgroup_args(cpu_max_cores=0.0625, memory_megabytes=256, disk_gigabytes=4)
+		self.assertIn("cpu.max=6250 100000", args)
+		# A 1/8 cap rounds to 12500.
+		eighth = cgroup_args(cpu_max_cores=0.125, memory_megabytes=512, disk_gigabytes=6)
+		self.assertIn("cpu.max=12500 100000", eighth)
 
 	def test_resource_limit_args_omits_fsize_for_lv_disk(self) -> None:
 		# The VM disk is an LVM thin volume (a block device), not a regular file

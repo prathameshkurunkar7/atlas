@@ -165,12 +165,13 @@ fixtures = [
 # -----------
 # Row-level access for the Atlas User audience (the dashboard SPA). Operators
 # (System Manager) are unrestricted; users see only their own machines /
-# snapshots, and — for the inline Activity panel — only the Tasks of a machine
-# they own. See atlas/atlas/permissions.py and spec/11-user-ui.md.
+# snapshots / SSH keys, and — for the inline Activity panel — only the Tasks of
+# a machine they own. See atlas/atlas/permissions.py and spec/11-user-ui.md.
 
 permission_query_conditions = {
 	"Virtual Machine": "atlas.atlas.permissions.owner_only",
 	"Virtual Machine Snapshot": "atlas.atlas.permissions.owner_only",
+	"SSH Key": "atlas.atlas.permissions.owner_only",
 	"Task": "atlas.atlas.permissions.task_by_owned_vm",
 }
 

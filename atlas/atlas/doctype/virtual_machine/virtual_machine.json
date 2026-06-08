@@ -17,6 +17,7 @@
   "size_preset",
   "column_break_resources_0",
   "vcpus",
+  "cpu_max_cores",
   "column_break_resources_1",
   "memory_megabytes",
   "column_break_resources_2",
@@ -104,7 +105,7 @@
    "fieldtype": "Select",
    "label": "Size preset",
    "no_copy": 1,
-   "options": "Custom\nSmall (1 vCPU / 512 MB / 4 GB)\nMedium (2 vCPU / 2048 MB / 10 GB)\nLarge (4 vCPU / 8192 MB / 40 GB)",
+   "options": "Custom\nShared 1x\nShared 2x\nShared 4x\nShared 8x\nDedicated 1x",
    "set_only_once": 1
   },
   {
@@ -113,9 +114,19 @@
   },
   {
    "default": "1",
+   "description": "Guest vCPU thread count (Firecracker vcpu_count). Whole number >= 1. CPU bandwidth below or at one core is set by cpu_max_cores.",
    "fieldname": "vcpus",
    "fieldtype": "Int",
    "label": "vCPUs",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "description": "Host CPU bandwidth cap in whole-core units (cgroup cpu.max). Fractional for sub-1 sizes (e.g. 0.0625 = 1/16 of a core). Defaults to vcpus.",
+   "fieldname": "cpu_max_cores",
+   "fieldtype": "Float",
+   "label": "CPU bandwidth (cores)",
+   "precision": "4",
    "reqd": 1
   },
   {

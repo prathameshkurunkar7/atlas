@@ -36,12 +36,14 @@ def default_image() -> str:
 	return active[0]
 
 
-def default_server(required_vcpus: int) -> str:
+def default_server(required_vcpus: float) -> str:
 	"""The first Active server with room for `required_vcpus`.
 
-	Capacity is the same vCPU accounting the desk capacity helper uses
+	`required_vcpus` is a CPU *bandwidth* cost (cpu_max_cores units), matching
+	how `capacity_for_server` sums usage — a 1/16-vCPU machine needs 0.0625, not
+	a whole vCPU. Capacity is the same accounting the desk capacity helper uses
 	(atlas/api/server_capacity.py): a server's *effective* vCPU budget (physical
-	total times `Atlas Settings.overprovision_factor`) minus the vCPUs of its
+	total times `Atlas Settings.overprovision_factor`) minus the bandwidth of its
 	non-Terminated VMs. Servers whose size has no known vCPU total — a size we
 	haven't catalogued, or a self-managed host with no slug — report
 	`effective_vcpus is None` and are treated as having unlimited room: the
@@ -79,4 +81,8 @@ def apply_user_defaults(virtual_machine) -> None:
 	if not virtual_machine.image:
 		virtual_machine.image = default_image()
 	if not virtual_machine.server:
-		virtual_machine.server = default_server(int(virtual_machine.vcpus or 1))
+		# Bandwidth cost, matching capacity_for_server's used sum. before_validate
+		# defaults cpu_max_cores to vcpus, but apply_user_defaults runs in
+		# before_insert (before before_validate), so fall back to vcpus here too.
+		required = float(virtual_machine.cpu_max_cores or virtual_machine.vcpus or 1)
+		virtual_machine.server = default_server(required)

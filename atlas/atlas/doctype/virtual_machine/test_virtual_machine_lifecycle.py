@@ -306,6 +306,50 @@ class TestVirtualMachineLifecycle(IntegrationTestCase):
 			vm.resize(disk_gigabytes=1)
 		self.assertIn("can only grow", str(raised.exception))
 
+	def test_resize_keeps_whole_core_vm_whole_core(self) -> None:
+		# A whole-core VM (cpu_max_cores == vcpus) that resizes vcpus without an
+		# explicit cap tracks the new vcpus, so it stays whole-core.
+		from atlas.atlas.doctype.virtual_machine import virtual_machine as module
+
+		vm = _vm_with_status("Stopped")  # vcpus=1, cpu_max_cores=1
+		with patch.object(module, "run_task", return_value=fake_task()):
+			vm.resize(vcpus=4)
+		vm.reload()
+		self.assertEqual(vm.vcpus, 4)
+		self.assertEqual(vm.cpu_max_cores, 4.0)
+
+	def test_resize_accepts_explicit_fractional_cap(self) -> None:
+		# An explicit cpu_max_cores wins: persist a fractional cap on a Stopped VM.
+		from atlas.atlas.doctype.virtual_machine import virtual_machine as module
+
+		vm = _vm_with_status("Stopped")
+		with patch.object(module, "run_task", return_value=fake_task()):
+			vm.resize(cpu_max_cores=0.5)
+		vm.reload()
+		self.assertEqual(vm.cpu_max_cores, 0.5)
+		self.assertEqual(vm.vcpus, 1, "vcpus unchanged when only the cap is resized")
+
+	def test_snapshot_defaults_title_when_omitted(self) -> None:
+		from atlas.atlas.doctype.virtual_machine import virtual_machine as module
+
+		vm = _vm_with_status("Stopped")
+		vm.db_set("title", "web-01")
+		task = fake_task(stdout='ATLAS_RESULT={"size_bytes": 123}')
+		with patch.object(module, "run_task", return_value=task):
+			snapshot_name = vm.snapshot()  # no title
+		title = frappe.db.get_value("Virtual Machine Snapshot", snapshot_name, "title")
+		self.assertTrue(title.startswith("web-01 — "), title)
+
+	def test_snapshot_uses_given_title(self) -> None:
+		from atlas.atlas.doctype.virtual_machine import virtual_machine as module
+
+		vm = _vm_with_status("Stopped")
+		task = fake_task(stdout='ATLAS_RESULT={"size_bytes": 123}')
+		with patch.object(module, "run_task", return_value=task):
+			snapshot_name = vm.snapshot("nightly")
+		title = frappe.db.get_value("Virtual Machine Snapshot", snapshot_name, "title")
+		self.assertEqual(title, "nightly")
+
 	def test_ordinary_save_of_resource_field_still_blocked(self) -> None:
 		# The drift guard must stay live: only resize() may move these fields.
 		vm = _vm_with_status("Stopped")

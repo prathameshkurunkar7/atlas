@@ -139,14 +139,18 @@ def derive_veth_pair(virtual_machine_name: str) -> tuple[str, str]:
 	return f"atlas-h{short}", f"atlas-n{short}"
 
 
-def cgroup_args(vcpus: int, memory_megabytes: int, disk_gigabytes: int) -> list[str]:
+def cgroup_args(cpu_max_cores: float, memory_megabytes: int, disk_gigabytes: int) -> list[str]:
 	"""Jailer `--cgroup` flags bounding the VM's memory and CPU (cgroup v2).
 
 	- `memory.max` = guest RAM + headroom (whole-process ceiling).
 	- `memory.swap.max` = 0 — never swap guest RAM to host disk (also the
 	  per-VM form of Firecracker's "disable swap / data-remanence" guidance).
-	- `cpu.max` = `<vcpus * period> <period>` — `vcpus` cores' worth of CPU
-	  bandwidth per 100 ms period (bandwidth cap, not cpuset pinning).
+	- `cpu.max` = `<cpu_max_cores * period> <period>` — `cpu_max_cores` cores'
+	  worth of CPU bandwidth per 100 ms period (bandwidth cap, not cpuset
+	  pinning). Fractional for sub-1 sizes: 1/16 core is `6250 100000`. This is
+	  the *bandwidth* cap, distinct from the guest's `vcpu_count` (the thread
+	  count Firecracker boots) — a 1/16 VM still has one vCPU thread, throttled
+	  to 6.25% of a core.
 
 	`disk_gigabytes` is unused here — the VM disk is a thin LV bounded by
 	pool-space accounting (the pool's `data_percent`, monitored at the host),
@@ -156,7 +160,7 @@ def cgroup_args(vcpus: int, memory_megabytes: int, disk_gigabytes: int) -> list[
 	_ = disk_gigabytes
 	period_us = 100000
 	memory_max_bytes = (memory_megabytes + MEMORY_HEADROOM_MIB) * 1024 * 1024
-	cpu_quota_us = vcpus * period_us
+	cpu_quota_us = round(cpu_max_cores * period_us)
 	return [
 		"--cgroup",
 		f"memory.max={memory_max_bytes}",

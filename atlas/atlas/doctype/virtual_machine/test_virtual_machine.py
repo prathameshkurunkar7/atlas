@@ -92,7 +92,7 @@ class TestVirtualMachine(IntegrationTestCase):
 		# stripped — every element is a bare value.
 		expected_cgroup = [
 			token
-			for token in cgroup_args(vm.vcpus, vm.memory_megabytes, vm.disk_gigabytes)
+			for token in cgroup_args(vm.cpu_max_cores, vm.memory_megabytes, vm.disk_gigabytes)
 			if not token.startswith("--")
 		]
 		expected_resource = [
@@ -106,6 +106,27 @@ class TestVirtualMachine(IntegrationTestCase):
 		# into a stray positional the jailer rejects.
 		cpu_max = next(value for value in variables["CGROUP_ARG"] if value.startswith("cpu.max="))
 		self.assertIn(" ", cpu_max, "cpu.max must keep its '<quota> <period>' space as one token")
+
+	def test_cpu_max_cores_defaults_to_vcpus(self) -> None:
+		# A caller who sets only vcpus (operator desk path, bootstrap, direct API)
+		# gets whole-core bandwidth: cpu_max_cores defaults to vcpus.
+		vm = _new_vm(vcpus=2)
+		self.assertEqual(vm.cpu_max_cores, 2.0)
+		# The provision cgroup cpu.max then reflects 2 cores.
+		variables = vm._provision_variables()
+		cpu_max = next(v for v in variables["CGROUP_ARG"] if v.startswith("cpu.max="))
+		self.assertEqual(cpu_max, "cpu.max=200000 100000")
+
+	def test_fractional_cpu_max_cores_in_provision_cgroup(self) -> None:
+		# A 1/16-vCPU machine: one guest thread (vcpus=1), host-throttled to
+		# 6.25% of a core. The guest boots on vcpu_count=1 (VCPUS), and the cgroup
+		# cpu.max carries the fractional quota.
+		vm = _new_vm(vcpus=1, cpu_max_cores=0.0625)
+		self.assertEqual(vm.cpu_max_cores, 0.0625)
+		variables = vm._provision_variables()
+		self.assertEqual(variables["VCPUS"], "1", "guest still boots one vcpu thread")
+		cpu_max = next(v for v in variables["CGROUP_ARG"] if v.startswith("cpu.max="))
+		self.assertEqual(cpu_max, "cpu.max=6250 100000")
 
 	def test_provision_failure_flips_status_to_failed(self) -> None:
 		"""On failure the Task is saved with `Failure`; the Task controller

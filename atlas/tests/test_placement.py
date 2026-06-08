@@ -71,7 +71,7 @@ class TestPlacement(IntegrationTestCase):
 		doc = {
 			"doctype": "Virtual Machine",
 			"title": "placement-vm",
-			"size_preset": "Small (1 vCPU / 512 MB / 4 GB)",
+			"size_preset": "Shared 1x",
 			"vcpus": 1,
 			"memory_megabytes": 512,
 			"disk_gigabytes": 4,
