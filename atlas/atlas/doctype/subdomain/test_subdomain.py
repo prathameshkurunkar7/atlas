@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import frappe
 from frappe.tests import IntegrationTestCase
 
@@ -96,3 +98,47 @@ class TestSubdomain(IntegrationTestCase):
 
 	def test_empty_region_is_empty_map(self) -> None:
 		self.assertEqual(map_for_region("nowhere"), {})
+
+	def test_insert_enqueues_region_reconcile(self) -> None:
+		vm = _new_vm()
+		with patch("frappe.enqueue") as enqueue:
+			_make_subdomain("acme", vm.name, region="blr1")
+		enqueue.assert_called_once()
+		_, kwargs = enqueue.call_args
+		self.assertEqual(
+			enqueue.call_args.args[0],
+			"atlas.atlas.doctype.subdomain.subdomain.auto_reconcile_region",
+		)
+		self.assertEqual(kwargs["region"], "blr1")
+
+	def test_active_toggle_enqueues_reconcile(self) -> None:
+		vm = _new_vm()
+		sub = _make_subdomain("acme", vm.name, region="blr1")
+		with patch("frappe.enqueue") as enqueue:
+			sub.active = 0
+			sub.save(ignore_permissions=True)
+		enqueue.assert_called_once()
+		self.assertEqual(enqueue.call_args.kwargs["region"], "blr1")
+
+	def test_save_without_active_change_does_not_reconcile(self) -> None:
+		vm = _new_vm()
+		sub = _make_subdomain("acme", vm.name, region="blr1")
+		# A no-op save (no map-affecting field changed) must not SSH the fleet.
+		with patch("frappe.enqueue") as enqueue:
+			sub.save(ignore_permissions=True)
+		enqueue.assert_not_called()
+
+	def test_delete_enqueues_reconcile(self) -> None:
+		vm = _new_vm()
+		sub = _make_subdomain("acme", vm.name, region="blr1")
+		# delete_doc itself enqueues unrelated jobs (delete_dynamic_links), so pick
+		# out our reconcile call rather than asserting a single enqueue.
+		with patch("frappe.enqueue") as enqueue:
+			frappe.delete_doc("Subdomain", sub.name, ignore_permissions=True)
+		reconciles = [
+			call
+			for call in enqueue.call_args_list
+			if call.args and call.args[0] == "atlas.atlas.doctype.subdomain.subdomain.auto_reconcile_region"
+		]
+		self.assertEqual(len(reconciles), 1)
+		self.assertEqual(reconciles[0].kwargs["region"], "blr1")
