@@ -173,18 +173,22 @@ Virtual Machine.status = Pending; enqueue background job
 job: allocate IPv6, MAC, tap name in the Frappe DB
       |
       v
-upload scripts/provision-vm.py (+ the staged atlas package) to the server
+scp scripts/provision-vm.py to the server (the atlas package is already durable
+at /var/lib/atlas/bin from bootstrap — not re-staged; both calls share one SSH
+master via ControlMaster, so only the first pays a handshake)
       |
       v
-ssh root@server "python3 /tmp/atlas/provision-vm.py --virtual-machine-name … --flag value …"
+ssh root@server "PYTHONPATH=/var/lib/atlas/bin python3 /tmp/atlas/provision-vm.py --virtual-machine-name … --flag value …"
       |  -- the script does, on the server, in one process:
       |     - lvcreate -s: instant CoW snapshot of the base image LV -> VM disk LV
       |     - lvextend -r if disk_gigabytes > base (grow LV + ext4)
       |     - mount the LV device, write SSH key + env, umount
       |     - mknod the LV's block node into the jail (per-VM uid, 0660)
       |     - write firecracker.json, network.env, jailer-launch.sh
-      |     - systemctl enable --now firecracker-vm@<name>.service
-      |  (systemd's ExecStartPre runs vm-network-up.py; ExecStart the launcher)
+      |     - systemctl enable + systemctl start --no-block firecracker-vm@<name>.service
+      |  (--no-block: the Task returns once systemd queues the start, not once the
+      |   unit is active; systemd's ExecStartPre runs vm-disk-up + vm-network-up,
+      |   then ExecStart runs the launcher — all async to the Task)
       |
       v
 Task is created with status = Running, then updated to Success

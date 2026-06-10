@@ -20,6 +20,12 @@ from atlas.atlas._ssh.transport import (
 if TYPE_CHECKING:
 	from atlas.atlas.doctype.task.task import Task
 
+# Where `Server.bootstrap()` durably places the shared `atlas` package
+# (`…/bin/atlas/*.py`). Python tasks reach it via PYTHONPATH instead of a per-Task
+# re-upload — see `_remote_command` and script_uploads.py. The dir on the path is
+# the package's PARENT so `import atlas` resolves the `atlas/` directory under it.
+DURABLE_PACKAGE_DIRECTORY = "/var/lib/atlas/bin"
+
 
 def run_task(
 	*,
@@ -216,11 +222,17 @@ def _remote_command(script: str, remote_script_path: str, variables: dict) -> st
 
 	The Python form is strictly better for the operator: a Task row now yields a
 	runnable, `--help`-able command line, not an `env …` blob.
+
+	Python tasks `import atlas` from the DURABLE package bootstrap placed at
+	`/var/lib/atlas/bin/atlas/`, reached via `PYTHONPATH` here — the package is no
+	longer re-staged per Task (see script_uploads.py). The entry point's own
+	`sys.path.insert(<staging>/lib)` shim is now a harmless no-op (that dir is not
+	populated); PYTHONPATH wins because it is on sys.path ahead of it.
 	"""
 	quoted_path = shlex.quote(remote_script_path)
 	if script.endswith(".py"):
 		args = _variables_to_flags(variables)
-		return f"python3 {quoted_path} {args}".strip()
+		return f"PYTHONPATH={DURABLE_PACKAGE_DIRECTORY} python3 {quoted_path} {args}".strip()
 	env_prefix = " ".join(f"{key}={shlex.quote(str(value))}" for key, value in variables.items())
 	return f"env {env_prefix} bash -x {quoted_path}".strip()
 

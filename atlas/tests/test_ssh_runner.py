@@ -204,7 +204,8 @@ class TestSidecarUploads(IntegrationTestCase):
 			any("atlas-network.service" in destination for destination in scp_destinations),
 			f"sidecar not in {scp_destinations}",
 		)
-		# Script always last, after sidecars (which now include the atlas package).
+		# Script always last, after the per-script sidecar (the atlas package is no
+		# longer staged per Task — it lives durably at /var/lib/atlas/bin).
 		script_index = next(
 			index
 			for index, destination in enumerate(scp_destinations)
@@ -229,7 +230,13 @@ class TestRemoteCommand(IntegrationTestCase):
 			"/tmp/atlas/snapshot-vm.py",
 			{"VIRTUAL_MACHINE_NAME": "uuid-1", "SNAPSHOT_ROOTFS_PATH": "/dev/atlas/x"},
 		)
-		self.assertTrue(command.startswith("python3 /tmp/atlas/snapshot-vm.py "))
+		# PYTHONPATH points `import atlas` at the durable bootstrap package; the
+		# package is no longer re-staged per Task (see script_uploads.py).
+		self.assertTrue(
+			command.startswith(
+				f"PYTHONPATH={runner.DURABLE_PACKAGE_DIRECTORY} python3 /tmp/atlas/snapshot-vm.py "
+			)
+		)
 		self.assertIn("--virtual-machine-name uuid-1", command)
 		self.assertIn("--snapshot-rootfs-path /dev/atlas/x", command)
 		self.assertNotIn("bash -x", command)

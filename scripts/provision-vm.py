@@ -203,8 +203,17 @@ def main() -> None:
 	#    pre-quoted line in the exec, internal spaces intact.
 	install_file(_jailer_launch(inputs, paths), paths.jailer_launch, mode="0755")
 
-	# 8. Enable and start the systemd unit.
-	run("sudo", "systemctl", "enable", "--now", paths.systemd_unit)
+	# 8. Enable and start the systemd unit. `enable` is instant (writes the
+	#    multi-user.target.wants symlink) and stays synchronous. `start --no-block`
+	#    queues the start job and returns immediately instead of blocking on the
+	#    unit reaching active — which means waiting out network-online.target plus
+	#    the two Python ExecStartPre hooks (vm-disk-up + vm-network-up, dozens of
+	#    ip/nft calls). The controller marks the VM Running without waiting for boot
+	#    anyway (VirtualMachine.provision), so nothing downstream needs the unit
+	#    active by the time this Task returns. A failing ExecStartPre now surfaces
+	#    async via the unit's own state (Restart=always); it is not lost.
+	run("sudo", "systemctl", "enable", paths.systemd_unit)
+	run("sudo", "systemctl", "start", "--no-block", paths.systemd_unit)
 
 	print(f"Provisioned {inputs.virtual_machine_name}.")
 

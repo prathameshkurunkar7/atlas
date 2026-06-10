@@ -106,11 +106,20 @@ def wait_for_ssh(connection, timeout_seconds: int = 300) -> None:
     user's normal `known_hosts`.
   - `-o BatchMode=yes` — never prompt.
   - `-o ConnectTimeout=30`.
+  - `-o ControlMaster=auto -o ControlPath=~/.atlas/cm/%C -o ControlPersist=60s`
+    — connection multiplexing. A Task opens 2+ connections to the same host
+    back-to-back (stage any sidecar, then run the script); the first does the
+    TCP+SSH handshake and the rest ride the shared master socket. `%C` (a hash
+    of user/host/port) keeps concurrent Tasks to different servers on distinct
+    sockets. This is the dominant latency win for a remote provision — each
+    avoided handshake is ~1.5s+ over a real droplet.
 - Variables: how they reach the script depends on the script's language
   (see [§ Tasks are Python](#tasks-are-python-the-zx-slice-we-built)):
-  - **`.py` task** — `ssh ... python3 /tmp/atlas/script.py --kebab-flag val …`.
+  - **`.py` task** —
+    `ssh ... PYTHONPATH=/var/lib/atlas/bin python3 /tmp/atlas/script.py --kebab-flag val …`.
     The `variables` dict keys (`UPPER_SNAKE`) become `--kebab-case` CLI flags;
-    a list value becomes a repeated flag. Quoted with `shlex.quote()`.
+    a list value becomes a repeated flag. Quoted with `shlex.quote()`. The
+    `PYTHONPATH` points `import atlas` at the durable package (next section).
   - **`.sh` task** — `ssh ... env VAR=val VAR2=val2 bash -x /tmp/atlas/script.sh`.
     The legacy form, kept for the few remaining shell tasks (`reboot-server.sh`).
   Both are built in `_ssh/runner.py::_remote_command()`, dispatched on the
@@ -244,17 +253,28 @@ def main() -> None:
 
 The lib lives in [`scripts/lib/atlas/`](../scripts/lib/atlas) and is
 **stdlib-only** — that constraint is load-bearing: it is why the logic tests
-with no host. A Task script imports it via a `sys.path` shim, so the package
-must land beside the script:
+with no host. A Task script imports it from **one durable copy** on the host:
 
-- **Per-Task staging** (`script_uploads.py`): the package is scp'd to
-  `/tmp/atlas/lib/atlas/` next to the staged `/tmp/atlas/<script>.py`. The
-  file list is computed from disk (`test_*.py` skipped), so a new lib module
-  ships with no map edit. Per-script sidecars (sync-image's guest
-  `atlas-network.service`) stay in `SCRIPT_SIDECARS`.
-- **Durable placement** (`Server.bootstrap()`): the same package is placed at
+- **Durable placement** (`Server.bootstrap()`): the package is placed once at
   `/var/lib/atlas/bin/atlas/`, beside the three systemd-hook scripts, so they
-  and `atlas-pool.service` can `import atlas` after a reboot.
+  and `atlas-pool.service` can `import atlas` after a reboot. The file list is
+  computed from disk (`test_*.py` skipped), so a new lib module ships with no
+  map edit.
+- **Tasks reach it via `PYTHONPATH`**: `_remote_command` prefixes every `.py`
+  task with `PYTHONPATH=/var/lib/atlas/bin`, so `import atlas` resolves the
+  durable copy. The package is **not** re-staged per Task — only per-script
+  sidecars (sync-image's guest `atlas-network.service`, in `SCRIPT_SIDECARS`)
+  are uploaded. This removes ~9 scp round-trips from every Task; combined with
+  SSH multiplexing it takes a remote provision from ~20s+ toward a few seconds.
+
+  **Staleness trade-off (deliberate):** because the package is no longer
+  shipped per Task, a controller-side change to a lib module reaches a host
+  only on the next `bootstrap` — bootstrap is the single refresh point. This is
+  the same contract the systemd hooks already follow (they too run the durable
+  copy). Re-run `bootstrap` (idempotent) after changing anything under
+  `scripts/lib/atlas/`. The entry-point scripts keep their old
+  `sys.path.insert(<staging>/lib)` shim; it is now a harmless no-op (that dir is
+  unpopulated) and `PYTHONPATH` wins because it sits ahead of it on `sys.path`.
 
 ### Systemd hooks are Python too, but not Tasks
 
@@ -348,16 +368,17 @@ view of the latest task.
 
 ## Sidecar uploads ([`script_uploads.py`](../atlas/atlas/script_uploads.py))
 
-Before a Python Task runs, `run_task` stages two things beside the script:
+Before a Python Task runs, `run_task` stages only **per-script sidecars** —
+extra files a specific task needs — beside the script. The shared `atlas`
+package is **not** among them: it lives durably at `/var/lib/atlas/bin/atlas/`
+(placed by `Server.bootstrap()`) and Tasks reach it via
+`PYTHONPATH=/var/lib/atlas/bin` (see [§ the shared `atlas` package and how it is
+staged](#the-shared-atlas-package-and-how-it-is-staged)). So a Python Task with
+no sidecar uploads **zero** files — it stages the script and runs it.
 
-1. **The shared `atlas` package** (every `.py` task imports it). The lib files
-   land at `/tmp/atlas/lib/atlas/` — the script's `sys.path` shim adds
-   `/tmp/atlas/lib`, so `import atlas` resolves. The file list is computed from
-   disk, so a new lib module needs no map edit.
-2. **Per-script sidecars** — extra files a specific task needs. The canonical
-   example is `sync-image.py`, which needs the guest `atlas-network.service`
-   unit staged so it can be embedded into the ext4 it builds. These live in a
-   small map:
+The canonical sidecar is `sync-image.py`, which needs the guest
+`atlas-network.service` unit staged so it can be embedded into the ext4 it
+builds. These live in a small map:
 
 ```python
 SCRIPT_SIDECARS: dict[str, list[tuple[str, str]]] = {
@@ -372,8 +393,7 @@ The script reads a sidecar by its staged path, passed as a CLI flag
 (e.g. `--guest-network-unit /tmp/atlas/atlas-network.service`).
 
 The systemd-hook scripts (`vm-network-up.py`, `vm-network-down.py`,
-`vm-disk-up.py`), the unit files, and a **durable copy of the same `atlas`
-package** are **not** staged per-Task — they're durable state placed at
+`vm-disk-up.py`), the unit files, and the durable `atlas` package are placed at
 `/var/lib/atlas/bin/` (and `/var/lib/atlas/bin/atlas/`) by `Server.bootstrap()`
 calling `upload_files` directly. See [03-bootstrapping.md](./03-bootstrapping.md).
 

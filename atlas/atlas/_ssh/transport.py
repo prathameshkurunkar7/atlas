@@ -19,6 +19,18 @@ import frappe
 KNOWN_HOSTS_PATH = Path("~/.atlas/known_hosts").expanduser()
 REMOTE_STAGING_DIRECTORY = "/tmp/atlas"
 
+# Connection-multiplexing control sockets. A Task opens 2+ ssh/scp connections to
+# the same host back-to-back (stage the script, then run it); without sharing,
+# each pays a full TCP+SSH handshake (the dominant cost of a provision over a
+# remote droplet — observed ~1.5s+ per handshake, several per Task). With a
+# master, the first connection does the handshake and every later ssh/scp to the
+# same (user, host, port) rides the existing socket. `%C` is ssh's hash of those
+# three, so concurrent Tasks to *different* servers get distinct sockets and
+# never collide; concurrent Tasks to the *same* server safely share one master
+# (ssh multiplexes channels). ControlPersist keeps the master alive briefly after
+# the last channel closes so the very next Task reuses it too, then it self-reaps.
+CONTROL_PATH_DIRECTORY = Path("~/.atlas/cm").expanduser()
+
 SSH_OPTIONS = [
 	"-o",
 	"StrictHostKeyChecking=accept-new",
@@ -28,6 +40,16 @@ SSH_OPTIONS = [
 	"BatchMode=yes",
 	"-o",
 	"ConnectTimeout=30",
+	# Connection sharing — see CONTROL_PATH_DIRECTORY above. ControlMaster=auto:
+	# reuse a master if one is live, else become it. The control dir is created by
+	# _ensure_known_hosts_directory() (which every ssh/scp already calls) before
+	# any connection, so ssh can always bind the master socket.
+	"-o",
+	"ControlMaster=auto",
+	"-o",
+	f"ControlPath={CONTROL_PATH_DIRECTORY}/%C",
+	"-o",
+	"ControlPersist=60s",
 	# Keepalive so a long-running command (the golden bake's `bench init` +
 	# `new-site`, minutes of apt/clone/node) survives a brief network blip yet a
 	# genuinely half-open connection DIES instead of hanging to the Task timeout.
@@ -237,6 +259,11 @@ def _ensure_known_hosts_directory() -> None:
 	parent = KNOWN_HOSTS_PATH.parent
 	if not parent.exists():
 		parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+	# The ControlPath dir must exist before ssh can bind a master socket there;
+	# fold it into the one ensure-helper every ssh/scp already calls so no call
+	# site can forget it. Same 0700 as known_hosts — these sockets gate host access.
+	if not CONTROL_PATH_DIRECTORY.exists():
+		CONTROL_PATH_DIRECTORY.mkdir(mode=0o700, parents=True, exist_ok=True)
 
 
 def forget_host(host: str) -> None:
