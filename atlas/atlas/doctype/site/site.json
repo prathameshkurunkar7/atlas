@@ -1,0 +1,171 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-06-09 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "tab_overview",
+  "subdomain",
+  "region",
+  "column_break_header",
+  "status",
+  "section_break_backing",
+  "virtual_machine",
+  "column_break_backing",
+  "subdomain_doc",
+  "section_break_credentials",
+  "admin_password"
+ ],
+ "fields": [
+  {
+   "fieldname": "tab_overview",
+   "fieldtype": "Tab Break",
+   "label": "Overview"
+  },
+  {
+   "description": "The bare DNS label the user chose, e.g. acme. A single label (no dots) so the site stays inside the one regional wildcard the proxy already terminates. The full site URL is <subdomain>.<region domain> — that FQDN is this row's name, the site-name-on-disk, and the proxy Host header (one routing string).",
+   "fieldname": "subdomain",
+   "fieldtype": "Data",
+   "in_global_search": 1,
+   "in_list_view": 1,
+   "label": "Subdomain",
+   "reqd": 1,
+   "set_only_once": 1
+  },
+  {
+   "description": "The regional wildcard zone + proxy fleet this site is fronted by, resolved from the active Root Domain at insert (the user never picks it). Immutable.",
+   "fieldname": "region",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Region",
+   "read_only": 1,
+   "set_only_once": 1
+  },
+  {
+   "fieldname": "column_break_header",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Pending",
+   "description": "Controller-written lifecycle state. Running is reached ONLY on an observed HTTP 200 from the guest :80 (Frappe is actually serving), not when the backing VM boots. Pending → Provisioning → Deploying → Running; Failed on any error; Terminated after teardown.",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Pending\nProvisioning\nDeploying\nRunning\nFailed\nTerminated",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_backing",
+   "fieldtype": "Section Break",
+   "label": "Backing"
+  },
+  {
+   "description": "The Virtual Machine that runs this site's Frappe bench, cloned from the golden bench snapshot by the controller (the user never picks it). Immutable once chosen.",
+   "fieldname": "virtual_machine",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Virtual Machine",
+   "options": "Virtual Machine",
+   "read_only": 1,
+   "set_only_once": 1
+  },
+  {
+   "fieldname": "column_break_backing",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "The Subdomain (proxy map) row this site created once it began serving — deleting it takes the site off the front door. Written by the controller after the readiness gate.",
+   "fieldname": "subdomain_doc",
+   "fieldtype": "Link",
+   "label": "Routing Entry",
+   "options": "Subdomain",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_credentials",
+   "fieldtype": "Section Break",
+   "label": "Credentials"
+  },
+  {
+   "description": "The Frappe Administrator password generated per-site by the in-guest deploy (the db root password is baked + shared; only this varies per site). Stored encrypted; shown once to the owner in the SPA so they can sign in. Controller-written.",
+   "fieldname": "admin_password",
+   "fieldtype": "Password",
+   "label": "Administrator Password",
+   "read_only": 1
+  }
+ ],
+ "links": [],
+ "modified": "2026-06-09 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Atlas",
+ "name": "Site",
+ "naming_rule": "Set by user",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "amend": 0,
+   "cancel": 0,
+   "create": 1,
+   "delete": 1,
+   "export": 1,
+   "import": 0,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 0,
+   "write": 1
+  },
+  {
+   "amend": 0,
+   "cancel": 0,
+   "create": 1,
+   "delete": 1,
+   "export": 0,
+   "if_owner": 1,
+   "import": 0,
+   "read": 1,
+   "report": 0,
+   "role": "Atlas User",
+   "share": 0,
+   "submit": 0,
+   "write": 1
+  }
+ ],
+ "search_fields": "subdomain,region,status",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [
+  {
+   "title": "Pending",
+   "color": "Orange"
+  },
+  {
+   "title": "Provisioning",
+   "color": "Orange"
+  },
+  {
+   "title": "Deploying",
+   "color": "Blue"
+  },
+  {
+   "title": "Running",
+   "color": "Green"
+  },
+  {
+   "title": "Failed",
+   "color": "Red"
+  },
+  {
+   "title": "Terminated",
+   "color": "Gray"
+  }
+ ],
+ "title_field": "subdomain",
+ "track_changes": 1
+}

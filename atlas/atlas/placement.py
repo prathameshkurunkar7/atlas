@@ -86,3 +86,45 @@ def apply_user_defaults(virtual_machine) -> None:
 		# before_insert (before before_validate), so fall back to vcpus here too.
 		required = float(virtual_machine.cpu_max_cores or virtual_machine.vcpus or 1)
 		virtual_machine.server = default_server(required)
+
+
+def default_bench_snapshot() -> str:
+	"""The golden bench Virtual Machine Snapshot a self-serve Site clones from.
+
+	A `Site`'s backing VM is not laid down from a base image — it is cloned from
+	the snapshot baked by plan 01 (preinstalled bench + MariaDB + Redis), via
+	`Virtual Machine Snapshot.clone_to_new_vm`. The operator names that snapshot
+	in `Atlas Settings.default_bench_snapshot`. Fail loud at the boundary when it
+	is unset or no longer Available — a Site can't be provisioned without it."""
+	configured = frappe.db.get_single_value("Atlas Settings", "default_bench_snapshot")
+	if not configured:
+		frappe.throw("No golden bench snapshot is configured — contact your operator.")
+	status = frappe.db.get_value("Virtual Machine Snapshot", configured, "status")
+	if status is None:
+		frappe.throw(f"Configured bench snapshot {configured} does not exist — contact your operator.")
+	if status != "Available":
+		frappe.throw(f"Bench snapshot {configured} is not Available (status is {status}).")
+	return configured
+
+
+def active_root_domain() -> "frappe.model.document.Document":
+	"""The single active Root Domain a self-serve Site is fronted by.
+
+	A `Root Domain` row (e.g. `blr1.frappe.dev`) ties a region to its regional
+	wildcard zone — the exact thing the proxy fleet terminates. A Site resolves
+	this once at insert to derive both its `region` and its FQDN suffix; the user
+	never picks either. Atlas is single-region today, so this is the one active
+	row. Raises (fail loud) when none or several are active — placement, like the
+	image/server choice, must be unambiguous."""
+	active = frappe.get_all(
+		"Root Domain",
+		filters={"is_active": 1},
+		fields=["name", "domain", "region"],
+		limit=2,
+		ignore_permissions=True,
+	)
+	if not active:
+		frappe.throw("No domain is configured — contact your operator.")
+	if len(active) > 1:
+		frappe.throw("Several domains are active — ask your operator to set a single active domain.")
+	return frappe.get_doc("Root Domain", active[0]["name"])

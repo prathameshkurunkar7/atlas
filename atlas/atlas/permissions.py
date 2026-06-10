@@ -4,9 +4,9 @@ Atlas has two audiences (see spec/11-user-ui.md):
 
 - **Operators** are System Manager. They see the whole fleet. Every function
   here short-circuits to "no restriction" for them.
-- **Users** hold the `Atlas User` role. They see only the Virtual Machines and
-  Snapshots they own (Frappe's built-in `owner`), and — for the inline
-  Activity panel — only the Tasks of a machine they own. They never see
+- **Users** hold the `Atlas User` role. They see only the Virtual Machines,
+  Snapshots, and Sites they own (Frappe's built-in `owner`), and — for the
+  inline Activity panel — only the Tasks of a machine they own. They never see
   Provider, Server, or Task as a navigable surface.
 
 Two halves, both wired in hooks.py:
@@ -22,8 +22,10 @@ import frappe
 
 OPERATOR_ROLE = "System Manager"
 
-# DocTypes whose rows a user owns directly via Frappe's `owner` column.
-_OWNED_DOCTYPES = ("Virtual Machine", "Virtual Machine Snapshot", "SSH Key")
+# DocTypes whose rows a user owns directly via Frappe's `owner` column. A
+# `Site Request` is created by a Guest and re-owned to the verified user at
+# fulfilment (plan 04), so a user can see only their own requests.
+_OWNED_DOCTYPES = ("Virtual Machine", "Virtual Machine Snapshot", "SSH Key", "Site", "Site Request")
 
 
 def _is_operator(user: str) -> bool:

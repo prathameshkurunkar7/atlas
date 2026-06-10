@@ -75,6 +75,11 @@ doctype_js = {
 # See spec/11-user-ui.md.
 website_route_rules = [
 	{"from_route": "/dashboard/<path:app_path>", "to_route": "dashboard"},
+	# The verified-signup landing page reads better at /site-status, but a www
+	# page with a controller must be named with an importable module name
+	# (atlas/www/site_status.py — a hyphen there can't be imported, so get_context
+	# never runs). Serve the pretty hyphen URL by mapping it to the underscore page.
+	{"from_route": "/site-status", "to_route": "site_status"},
 ]
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
@@ -172,6 +177,8 @@ permission_query_conditions = {
 	"Virtual Machine": "atlas.atlas.permissions.owner_only",
 	"Virtual Machine Snapshot": "atlas.atlas.permissions.owner_only",
 	"SSH Key": "atlas.atlas.permissions.owner_only",
+	"Site": "atlas.atlas.permissions.owner_only",
+	"Site Request": "atlas.atlas.permissions.owner_only",
 	"Task": "atlas.atlas.permissions.task_by_owned_vm",
 }
 

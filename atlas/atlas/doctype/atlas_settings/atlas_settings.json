@@ -9,6 +9,7 @@
   "provider",
   "section_break_user_dashboard",
   "default_user_image",
+  "default_bench_snapshot",
   "section_break_capacity",
   "overprovision_factor",
   "section_break_ssh",
@@ -41,6 +42,13 @@
    "label": "Default User Image",
    "options": "Virtual Machine Image",
    "description": "Base image a dashboard user's new machine is provisioned from. If unset, the single active image is used; if several are active, set this so placement is unambiguous."
+  },
+  {
+   "fieldname": "default_bench_snapshot",
+   "fieldtype": "Link",
+   "label": "Default Bench Snapshot",
+   "options": "Virtual Machine Snapshot",
+   "description": "The golden bench Virtual Machine Snapshot a self-serve Site's backing VM is cloned from (plan 01). The snapshot carries the preinstalled bench, MariaDB + Redis; Site.before_insert resolves it and provisions via Virtual Machine Snapshot.clone_to_new_vm. Must be set before any Site is created."
   },
   {
    "fieldname": "section_break_capacity",
