@@ -39,7 +39,14 @@ def _ensure_providers() -> None:
 def _make_domain(domain: str, region: str):
 	_ensure_providers()
 	if frappe.db.exists("Root Domain", domain):
-		return frappe.get_doc("Root Domain", domain)
+		# A Root Domain with this name may survive from another suite (test_site
+		# seeds blr1.frappe.dev with its OWN providers, e.g. letsencrypt-site-test).
+		# Re-point it at THIS suite's providers so the denormalized tls_provider
+		# assertion sees letsencrypt-test, not whatever the neighbour seeded.
+		existing = frappe.get_doc("Root Domain", domain)
+		existing.db_set("domain_provider", "route53-test")
+		existing.db_set("tls_provider", "letsencrypt-test")
+		return existing
 	return frappe.get_doc(
 		{
 			"doctype": "Root Domain",
