@@ -1,5 +1,5 @@
 """`/site-status?site=<fqdn>` — the live provisioning view a verified user lands
-on (plan 04 SPA work / spec 14 "the dashboard Site screen").
+on (spec/14-self-serve.md, "the dashboard Site screen").
 
 After clicking the verification link the user is logged in and redirected here
 (see `atlas/www/verify.py`). This page shows the six provisioning steps

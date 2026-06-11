@@ -542,7 +542,7 @@ def run_with_self_serve() -> None:
 	Then two settings the signup flow needs:
 
 	  - `Atlas Settings.default_bench_snapshot` — the golden image a Site's backing
-	    VM clones from (plan 01). Wired from `atlas_default_bench_snapshot` if set,
+	    VM clones from (spec/08-images.md). Wired from `atlas_default_bench_snapshot` if set,
 	    else from the most recent Available `golden-bench*` snapshot if one exists.
 	  - the outbound Email Account — so the verification email actually sends
 	    (`request_site` only queues it; spec/14 calls outbound email an operator
@@ -572,7 +572,7 @@ def ensure_default_bench_snapshot() -> None:
 	snapshot. Prefers the explicitly configured `atlas_default_bench_snapshot`;
 	otherwise adopts the newest Available snapshot whose title starts `golden-bench`
 	(what the bake e2e leaves). Skips with a printed pointer if none exists — the
-	bake is a billable host run (plan 01), not something to trigger from bootstrap."""
+	bake is a billable host run (spec/08-images.md), not something to trigger from bootstrap."""
 	configured = frappe.conf.get("atlas_default_bench_snapshot")
 	if configured:
 		status = frappe.db.get_value("Virtual Machine Snapshot", configured, "status")
@@ -597,7 +597,7 @@ def ensure_default_bench_snapshot() -> None:
 	if not candidates:
 		print(
 			"[bootstrap] no golden bench snapshot found — self-serve signup will fail until one exists. "
-			"Bake it (billable host run, plan 01):\n"
+			"Bake it (billable host run):\n"
 			"    bench --site <site> execute atlas.tests.e2e.use_cases.bench_image.run_smoke\n"
 			"  then re-run, or set atlas_default_bench_snapshot to its name."
 		)

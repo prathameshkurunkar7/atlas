@@ -1,4 +1,4 @@
-"""The public signup on-ramp (plan 04, Contract C).
+"""The public signup on-ramp (spec/14-self-serve.md, Contract C).
 
 The one guest-reachable write in Atlas: a visitor states an email + a subdomain,
 we hold the intent as a `Site Request` (Pending), and email them a verification

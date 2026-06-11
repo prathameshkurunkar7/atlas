@@ -1,4 +1,4 @@
-"""`/signup` — the public on-ramp page (plan 04, Contract C).
+"""`/signup` — the public on-ramp page (spec/14-self-serve.md, Contract C).
 
 The one guest-reachable form in Atlas: email + subdomain. It posts to
 `atlas.atlas.api.signup.request_site` (a guest-allowed whitelisted method), which

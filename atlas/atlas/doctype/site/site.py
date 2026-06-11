@@ -4,8 +4,7 @@ A `Site` is the user-owned aggregate that ties together the one routing identity
 (Contract A), the backing Virtual Machine it clones from the golden bench
 snapshot, and the readiness state (Contract B). It is NOT the `Subdomain` (the
 proxy map, which it creates once it is serving) and NOT the `Virtual Machine`
-(which it owns/creates). See plans/self-serve/02-site-doctype.md and
-spec/14-self-serve.md.
+(which it owns/creates). See spec/14-self-serve.md.
 
 The lifecycle mirrors `Virtual Machine`: an `IMMUTABLE_AFTER_INSERT` tuple guarded
 in `validate()`, a controller-written `status` Select (read-only on the form),
@@ -48,7 +47,7 @@ class Site(Document):
 		Then resolve the active region (the user never picks it) and start
 		Pending. The backing VM is created in the background job (after_insert),
 		not here — provisioning SSHes and must not block the insert. `owner` is
-		stamped by Frappe from the session user (plan 04 ensures that's the
+		stamped by Frappe from the session user (signup ensures that's the
 		verified user); we never set it."""
 		self._validate_label()
 		self._validate_reserved()
@@ -110,7 +109,7 @@ class Site(Document):
 		"""Build the one routing string: `<subdomain>.<region domain>`, the FQDN
 		that is simultaneously the site-name-on-disk, the proxy Host header, and
 		this row's key. Never transformed afterward. Uniqueness throws a clean
-		"taken" message (this is the signup race in plan 04), not a raw duplicate-
+		"taken" message (this is the signup race), not a raw duplicate-
 		key error."""
 		label = (self.subdomain or "").strip()
 		if not label:
@@ -169,7 +168,7 @@ def auto_provision(site_name: str) -> None:
 
 	  1. clone the backing VM from the golden bench snapshot and provision it,
 	  2. wait for the VM to boot (SSH up),
-	  3. run deploy-site.py in the guest (plan 03),
+	  3. run deploy-site.py in the guest,
 	  4. wait for an HTTP 200 from the guest :80 — the readiness gate (Contract B),
 	  5. create the Subdomain row (this is what makes the proxy route it),
 	  6. mark Running.
@@ -200,9 +199,9 @@ def auto_provision(site_name: str) -> None:
 		_wait_for_vm_running(vm_name)
 		_set_status(site, "Deploying")
 		admin_password = _deploy_site(site, vm_name)
-		# The per-site Administrator password (generated in the guest deploy,
-		# D01-3) is stored encrypted on the Site for the owner to read once via the
-		# SPA (plan 04). db_set on a Password field round-trips through Frappe's
+		# The per-site Administrator password (generated in the guest deploy)
+		# is stored encrypted on the Site for the owner to read once via the
+		# SPA. db_set on a Password field round-trips through Frappe's
 		# field encryption. Stored BEFORE the readiness wait so it survives even if
 		# the http gate later times out — the site exists with that admin from
 		# new-site onward, so the owner can still reach it on a manual retry.
@@ -305,9 +304,9 @@ def _wait_for_vm_running(vm_name: str, timeout_seconds: int = 1500, poll_seconds
 
 def _deploy_site(site, vm_name: str) -> str:
 	"""Run deploy-site.py in the guest: `bench new-site <fqdn>` + bring-up on :80.
-	Returns the per-site Administrator password the guest generated (D01-3).
+	Returns the per-site Administrator password the guest generated.
 
-	Seam for plan 03 — the in-guest deploy script + its guest-SSH driver."""
+	Seam for the in-guest deploy script + its guest-SSH driver."""
 	from atlas.atlas.deploy_site import deploy_site
 
 	return deploy_site(vm_name, site.name)
@@ -317,7 +316,7 @@ def _wait_for_http(site, vm_name: str) -> None:
 	"""Block until the guest answers HTTP 200 on :80 — the readiness gate
 	(Contract B). Frappe is actually serving, not merely the VM booted.
 
-	Seam for plan 03 — the `wait_for_http` probe over the VM's public /128. Passes
+	Seam for the `wait_for_http` probe over the VM's public /128. Passes
 	the site FQDN as the Host header (Contract A) so the bench's multitenant nginx
 	routes the probe to THIS site, not just any site on the VM."""
 	from atlas.atlas.deploy_site import wait_for_http

@@ -6,15 +6,14 @@ and puts it behind the regional proxy at `acme.blr1.frappe.dev`. The proxy
 ([12-proxy.md](./12-proxy.md)) and TLS ([13-tls.md](./13-tls.md)) halves already
 exist; this chapter is the **site layer** that drives them.
 
-This chapter is the durable spec; the build history and planned-vs-actual drift
-record live under [llm/plans/self-serve/](../llm/plans/self-serve/DRIFT.md). **Build status** is called out per section — the `Site` layer,
-the in-guest deploy script + HTTP readiness probe (plan 03), and the
-signup/verification surface (plan 04) are built and unit-green. The golden-image
-bake (plan 01) and the end-to-end flow (plan 05) are **host-proven**: a golden
-snapshot baked from scratch by `build.sh`, and a real signup → verify → cloned
-golden site → deploy → live HTTPS through the proxy on IPv4 + IPv6 — the rename
-model end to end. The deploy's `default_site` repoint (deploy step 3) was the one
-host-only bug that run surfaced and fixed.
+This chapter is the durable spec — the whole self-serve layer is built and
+**host-proven**: the `Site` layer, the in-guest deploy script + HTTP readiness
+probe, and the signup/verification surface are built and unit-green; the
+golden-image bake (`build.sh`) and the end-to-end flow are host-proven — a golden
+snapshot baked from scratch, and a real signup → verify → cloned golden site →
+deploy → live HTTPS through the proxy on IPv4 + IPv6, the rename model end to end.
+The deploy's `default_site` repoint (deploy step 3) was the one host-only bug that
+run surfaced and fixed.
 
 ## The one routing string (Contract A)
 
@@ -71,7 +70,7 @@ signup form → email verification → THEN Site row insert → verified user is
   `permission_query_conditions` → `atlas.atlas.permissions.owner_only` (`Site` ∈
   `_OWNED_DOCTYPES`). A user sees only their own Sites.
 
-## The signup → verify → fulfil surface *(built — plan 04)*
+## The signup → verify → fulfil surface *(built)*
 
 The public on-ramp inverts the order: the holding row first, the `Site` only
 after the email is proven.
@@ -131,7 +130,7 @@ after the email is proven.
   is a **Website User**, kept off Desk. (If the role ever drifts to desk access,
   Frappe would promote the user to System User — the fixture value is load-bearing.)
 
-**Admin handoff (plan 03/04).** After the Site reaches `Running`, the per-site
+**Admin handoff.** After the Site reaches `Running`, the per-site
 Administrator password stored encrypted on `Site.admin_password` is revealed on
 the `/site-status` page the user is already watching (the reveal is
 `site.get_password("admin_password")`, gated on `status == Running`). There is no
@@ -153,8 +152,8 @@ Fields, validation, permissions, and the full field table are in
    | ---- | ------ | -------- |
    | 1 | Clone the backing VM from `Atlas Settings.default_bench_snapshot` (`Virtual Machine Snapshot.clone_to_new_vm` — carries the baked bench + grown disk). `status → Provisioning`. | this layer |
    | 2 | `wait_for_ssh` — the cloned VM booted. | existing |
-   | 3 | Run `deploy-site.py` in the guest: rename the baked `site.local` → `<fqdn>` + reset its admin password + `setup production` (nginx serves on `:80`). The per-site admin password → stored encrypted on the Site. `status → Deploying`. | plan 03 (seam) |
-   | 4 | `wait_for_http` — block on the guest's HTTP 200 (Contract B). | plan 03 (seam) |
+   | 3 | Run `deploy-site.py` in the guest: rename the baked `site.local` → `<fqdn>` + reset its admin password + `setup production` (nginx serves on `:80`). The per-site admin password → stored encrypted on the Site. `status → Deploying`. | deploy seam |
+   | 4 | `wait_for_http` — block on the guest's HTTP 200 (Contract B). | deploy seam |
    | 5 | Create the `Subdomain` row (this is what makes the proxy route it — its own `after_insert` reconciles the regional fleet). | this layer |
    | 6 | `status → Running`. | this layer |
 
@@ -177,7 +176,7 @@ the per-site work. Placement resolves the snapshot from
 `Atlas Settings.default_bench_snapshot`; it fails loud when that is unset or not
 `Available`.
 
-## The in-guest deploy (`deploy-site.py`) *(built — plan 03)*
+## The in-guest deploy (`deploy-site.py`) *(built)*
 
 The one piece that runs `bench` *inside* the guest. The controller side is
 `atlas.atlas.deploy_site.deploy_site(vm, fqdn)`; the script is the committed
@@ -223,7 +222,7 @@ with the fleet key), recording the op as a `deploy-site` Task row.
      The setup-wizard gate is already cleared at bake time, so it is not re-set here.
   5. **`bench setup production`** — generates + reloads the bench's **own** nginx +
      supervisor config so nginx serves the site on `:80`. nginx + supervisor are
-     baked into the golden image (plan 01), so this is config + reload, not an
+     baked into the golden image (08-images.md), so this is config + reload, not an
      install. bench-cli sets `dns_multitenant`, but (per step 3) that does *not*
      actually drive Host-header routing on the clone — `default_site` is what
      resolves the site; this step brings nginx + supervisor up. It then **adds an
@@ -249,7 +248,7 @@ TLS/certbot steps a stand-alone bench would need.
 **Admin-password handoff.** The generated Administrator password is stored
 encrypted in the `Site.admin_password` (`Password` field), written by the
 orchestration *before* the readiness wait so it survives a later http-gate
-timeout. It is shown once to the owner in the SPA (plan 04) so they can sign in;
+timeout. It is shown once to the owner in the SPA so they can sign in;
 the db root password is never surfaced (single-tenant, localhost-only).
 
 ## The Subdomain it creates
@@ -268,18 +267,18 @@ the user-owned aggregate. The Site stores the created Subdomain's name in
     steps mocked at the module seams, incl. the admin-password storage), the
     `_create_subdomain` identity carry-through, `terminate`, and the owner-scoping
     permission contract. See `atlas/atlas/doctype/site/test_site.py`.
-  - *Deploy layer (plan 03)* — `wait_for_http`'s poll/timeout loop and 200-only
+  - *Deploy layer* — `wait_for_http`'s poll/timeout loop and 200-only
     predicate (the single probe mocked); the `deploy_site` upload + run +
     Task-record + fail-loud path (SSH transport mocked); and the in-guest script's
     typed I/O (kebab-flag parsing, the one `ATLAS_RESULT` line, the on-disk
     idempotency predicate). See `atlas/atlas/test_deploy_site.py`.
-  - *Status page (plan 04)* — `site_status.steps_for` maps each `Site.status` to
+  - *Status page* — `site_status.steps_for` maps each `Site.status` to
     the six-step checklist (Pending nothing-done, Provisioning both provision
     steps running, Deploying provision-done/deploy-running, Running all done,
     Failed deploy-phase failed, unknown status degrades without throwing). See
     `atlas/atlas/test_site_status.py`. The realtime push + owner-gating ride on the
     `auto_provision` and permission contracts already covered in the Site layer.
-- **Host facts (plan 05 e2e — `self_serve_site.py`):** the real signup → verify →
+- **Host facts (e2e — `self_serve_site.py`):** the real signup → verify →
   fulfil → golden-image clone + `deploy-site.py` (rename baked `site.local` +
   `setup production` actually serving on `:80`) → HTTP-200 readiness → Subdomain → an
   off-droplet `curl https://acme.<region domain>` over **both IPv4 and IPv6** —

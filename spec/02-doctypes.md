@@ -1291,8 +1291,8 @@ scoped by `permission_query_conditions` (`atlas.atlas.permissions.owner_only`).
 - `after_insert()` — enqueue `auto_provision` (`queue="long"`, it SSHes).
 - `auto_provision(site_name)` *(module function)* — the background entrypoint:
   clone the backing VM from `Atlas Settings.default_bench_snapshot` →
-  `wait_for_ssh` → run `deploy-site.py` in the guest (plan 03) → `wait_for_http`
-  for the 200 (plan 03) → create the `Subdomain` row → `status = Running`. Any
+  `wait_for_ssh` → run `deploy-site.py` in the guest ([14-self-serve.md](./14-self-serve.md)) → `wait_for_http`
+  for the 200 → create the `Subdomain` row → `status = Running`. Any
   failure flips `Failed` and re-raises (fail loud). No-op past `Pending`.
 - `terminate()` — delete the `Subdomain` (proxy stops routing), terminate the
   backing VM, set `Terminated`. Mirrors `VirtualMachine.terminate()`'s
@@ -1310,7 +1310,7 @@ scoped by `permission_query_conditions` (`atlas.atlas.permissions.owner_only`).
 
 ## Site Request
 
-The pre-verification holding row for self-serve signup (Contract C, plan 04). A
+The pre-verification holding row for self-serve signup (Contract C, [14-self-serve.md](./14-self-serve.md)). A
 guest submits an email + subdomain; we hold the intent here (status `Pending`,
 with a verification token) and email a link. **Only when that link is clicked**
 do we create the [User](#) and insert the [Site](#site) — no droplet/site

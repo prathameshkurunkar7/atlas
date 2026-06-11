@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Deploy ONE Frappe site into a golden bench VM — run INSIDE the guest over
-# guest-SSH (plans/self-serve/03-deploy-site-script.md), driven by the controller
-# `atlas.atlas.deploy_site.deploy_site`. The golden image (plans/self-serve/01)
+# guest-SSH (spec/14-self-serve.md), driven by the controller
+# `atlas.atlas.deploy_site.deploy_site`. The golden image (spec/08-images.md)
 # already baked bench-cli + `bench init` AND a fully-created site under the fixed
 # name `site.local`; this script does only the per-site work the image can't bake
 # because it carries the routing identity (Contract A): RENAME the baked site to
@@ -62,7 +62,7 @@ class DeploySiteInputs:
 	"""Per-site deploy inputs. `site_name` is the full FQDN (Contract A) — the
 	bench new-site name on disk, the proxy Host header, and the Site key, one
 	string never transformed. `admin_password` is generated per-site by the
-	controller (D01-3: the db root password is baked + shared, the Administrator
+	controller (the db root password is baked + shared, the Administrator
 	password is per-site) and returned to nobody but the owner."""
 
 	site_name: str
@@ -129,9 +129,9 @@ def _preflight() -> None:
 	(renamed) the baked site, so a missing `site.local` there is expected, not an
 	error."""
 	if not os.path.exists(BENCH):
-		sys.exit(f"bench-cli not found at {BENCH}; this VM was not baked from the golden image (plan 01)")
+		sys.exit(f"bench-cli not found at {BENCH}; this VM was not baked from the golden image")
 	if not os.path.isdir(BENCH_DIR):
-		sys.exit(f"baked bench {BENCH_DIR} missing; this VM was not baked from the golden image (plan 01)")
+		sys.exit(f"baked bench {BENCH_DIR} missing; this VM was not baked from the golden image")
 
 
 def _site_exists(site_name: str) -> bool:
@@ -153,13 +153,13 @@ def _rename_site(inputs: DeploySiteInputs) -> None:
 	the FQDN, verbatim" is satisfied by `os.rename(sites/site.local →
 	sites/<fqdn>)`. The Administrator password is then reset to the per-VM secret:
 	the baked password (build.sh) is a shared throwaway and must never reach a user
-	(D01-3 — only the db root password is baked + shared). The setup-wizard gate is
+	(only the db root password is baked + shared). The setup-wizard gate is
 	already cleared at bake time, so it is not re-set here."""
 	baked = f"{SITES_DIR}/{BAKED_SITE}"
 	if not os.path.isdir(baked):
 		sys.exit(
 			f"baked site {baked} missing; this VM was cloned from a site-less snapshot, "
-			f"not the baked-site golden image (plan 01) — re-bake or fix default_bench_snapshot"
+			f"not the baked-site golden image — re-bake or fix default_bench_snapshot"
 		)
 	os.rename(baked, f"{SITES_DIR}/{inputs.site_name}")
 	_reset_admin_password(inputs)
@@ -199,7 +199,7 @@ def _setup_production() -> None:
 	"""Bring the bench up production-style so its OWN nginx serves the site on :80.
 	`bench setup production` generates + installs the nginx + supervisor config and
 	reloads them. The bench's nginx is the in-guest front door; TLS still terminates
-	at the EDGE proxy (plan 03 open Q — no in-guest certbot), which routes the south
+	at the EDGE proxy (spec/14-self-serve.md — no in-guest certbot), which routes the south
 	hop to this :80. Whole-bench, not per-site, so it is safe + idempotent to re-run.
 
 	Note: bench-cli sets `dns_multitenant`, but on a snapshot-booted clone its

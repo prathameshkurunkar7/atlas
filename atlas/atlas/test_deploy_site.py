@@ -1,4 +1,4 @@
-"""Unit tests for the per-site deploy control plane (plans/self-serve/03).
+"""Unit tests for the per-site deploy control plane (spec/14-self-serve.md).
 
 Two seams, both pure-once-mocked:
 
@@ -10,7 +10,7 @@ Two seams, both pure-once-mocked:
   lookup; no real guest.
 
 The host fact — a real `bench new-site` + `setup production` actually serving on
-:80 — is proven in the e2e (plan 05), not here."""
+:80 — is proven in the e2e (spec/14-self-serve.md), not here."""
 
 from __future__ import annotations
 

@@ -2,7 +2,7 @@
 (Contract C), the shared Contract-A label validation, token + expiry, and owner
 stamping. All milliseconds, no host: inserting the Site in a test enqueues
 auto_provision but does NOT run it (frappe.in_test queues without executing), so
-no VM is cloned — exactly the boundary plan 04 wants asserted.
+no VM is cloned — exactly the boundary spec/14-self-serve.md wants asserted.
 
 The fulfilment ordering is THE invariant: a `Site` (and therefore a billable VM)
 must exist only AFTER verification, never before."""

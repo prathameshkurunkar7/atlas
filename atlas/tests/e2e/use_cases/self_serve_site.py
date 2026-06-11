@@ -1,9 +1,9 @@
-"""Use case: signup → email verify → live Frappe site, end to end (plan 05).
+"""Use case: signup → email verify → live Frappe site, end to end.
 
 The superset host-bound proof of the self-serve site layer
-(plans/self-serve/00-overview.md, spec/14-self-serve.md). It consumes everything
-the other tracks built — 01's golden bench snapshot, 02's `Site` doctype, 03's
-`deploy-site.py` + readiness gate, 04's signup/verify on-ramp — PLUS the already
+(spec/14-self-serve.md). It consumes everything
+the other tracks built — the golden bench snapshot, the `Site` doctype, the
+`deploy-site.py` + readiness gate, the signup/verify on-ramp — PLUS the already
 proven proxy + TLS layers, and drives the whole flow on a real droplet:
 
     signup (request_site)  →  Site Request (Pending), NO Site/VM   (Contract C)
@@ -70,7 +70,7 @@ from atlas.tests.e2e.use_cases.proxy_vm import _teardown as _teardown_proxy
 _TEST_SUBDOMAIN = "acme"
 # A throwaway email — the verified User that fulfilment creates is dropped in
 # teardown (a real User row persists past the transaction; the e2e is
-# non-transactional, plan 05 findings).
+# non-transactional).
 _TEST_EMAIL = "self-serve-e2e@example.com"
 
 
@@ -97,7 +97,7 @@ def run_smoke(reuse: bool = True, keep: bool = True) -> None:
 		quieted = _quiet_other_root_domains(domain)
 		tls_issuance._seed_tls_doctypes(config)
 
-		# The golden bench snapshot the site VM clones from (plan 01). Resolve it
+		# The golden bench snapshot the site VM clones from (spec/08-images.md). Resolve it
 		# from Atlas Settings, or bake it inline on the shared droplet if absent —
 		# fail clean (MissingConfig) before any billable site provision if neither.
 		# Side effect (sets Atlas Settings.default_bench_snapshot) is what matters here.
@@ -318,10 +318,10 @@ def _dump_site_tasks(fqdn: str) -> None:
 
 
 def _assert_admin_password_set(fqdn: str) -> None:
-	"""The per-site Administrator password (generated in the guest deploy, D03-2) is
+	"""The per-site Administrator password (generated in the guest deploy) is
 	stored encrypted on the Site and readable by the owner. Assert it is non-empty —
-	the backend reveal the SPA will surface (the SPA Sites screen is deferred,
-	D04-6). We don't log in here: LE staging is untrusted (curl -k) and a real Desk
+	the backend reveal the SPA will surface (the SPA Sites screen is deferred).
+	We don't log in here: LE staging is untrusted (curl -k) and a real Desk
 	login adds nothing this proves over the 200 + password presence."""
 	password = frappe.get_doc("Site", fqdn).get_password("admin_password")
 	assert password, f"Site {fqdn} has no admin_password stored after Running"
@@ -337,7 +337,7 @@ def _assert_inbound_https(family: str, address: str, hostname: str) -> None:
 	comes back through the proxy from the live Frappe site.
 
 	`family` is curl's `-4`/`-6`. The probe is `/api/method/ping` (the same honest
-	"Frappe is serving THIS site" signal the readiness gate uses, D03-3) so a real
+	"Frappe is serving THIS site" signal the readiness gate uses) so a real
 	site response (`pong`) is the success token — independent of the setup-wizard.
 	curl -k (LE staging is untrusted; cert identity is tls_issuance's job). Polls
 	for the DO edge / DNAT / nginx / fresh DNS to settle. v6 needs brackets in the
@@ -388,7 +388,7 @@ def _teardown(
 	email: str,
 ) -> None:
 	"""Billable-aware teardown, every step guarded so one failure doesn't strand the
-	rest (plan 05: terminate the site VM, delete the Subdomain, release the reserved
+	rest (terminate the site VM, delete the Subdomain, release the reserved
 	IP, delete the Site / Site Request rows, and the created User — which persists
 	past the transaction). Site.terminate() already drops the Subdomain + the backing
 	VM, so we drive it first, then mop up the rows it doesn't own."""

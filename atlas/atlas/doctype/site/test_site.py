@@ -1,7 +1,7 @@
 """Unit tests for the Site controller — the routing-string contract (Contract A),
 immutability, the provision→deploy→running state machine and its background
 orchestration (Contract B), and terminate. All milliseconds, no host: the host
-parts (real clone + deploy + HTTP 200) are proven in the e2e (plan 05).
+parts (real clone + deploy + HTTP 200) are proven in the e2e (spec/14-self-serve.md).
 
 The background entrypoint's host steps — clone the VM, wait for SSH, run
 deploy-site.py, wait for HTTP 200 — are mocked here at the module seams; only the

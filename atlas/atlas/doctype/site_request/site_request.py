@@ -1,4 +1,4 @@
-"""Site Request — the pre-verification holding row (Contract C, plan 04).
+"""Site Request — the pre-verification holding row (Contract C, spec/14-self-serve.md).
 
 The whole point of this doctype is the *ordering*: a user signs up, we hold the
 intent here, email them a link, and **only after they click it** do we create

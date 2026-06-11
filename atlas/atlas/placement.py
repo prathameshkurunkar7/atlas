@@ -92,7 +92,7 @@ def default_bench_snapshot() -> str:
 	"""The golden bench Virtual Machine Snapshot a self-serve Site clones from.
 
 	A `Site`'s backing VM is not laid down from a base image — it is cloned from
-	the snapshot baked by plan 01 (preinstalled bench + MariaDB + Redis), via
+	the snapshot baked by the golden image (spec/08-images.md, preinstalled bench + MariaDB + Redis), via
 	`Virtual Machine Snapshot.clone_to_new_vm`. The operator names that snapshot
 	in `Atlas Settings.default_bench_snapshot`. Fail loud at the boundary when it
 	is unset or no longer Available — a Site can't be provisioned without it."""

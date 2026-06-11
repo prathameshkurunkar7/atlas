@@ -1,4 +1,4 @@
-"""Unit tests for the public signup API (plan 04). Asserts the guest-callable
+"""Unit tests for the public signup API (spec/14-self-serve.md). Asserts the guest-callable
 `request_site`: Contract-A validation, the "taken" pre-check, the per-email
 pending cap, that it creates a Pending Site Request (and NOTHING else — no User,
 no Site, no VM, Contract C), and that it queues the verification email (asserted

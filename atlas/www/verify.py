@@ -1,6 +1,6 @@
 """`/verify?token=…` — the email-verification gate that fulfils a Site Request.
 
-This is step 4-6 of Contract C (plan 04): the user clicks the link we emailed,
+This is step 4-6 of Contract C (spec/14-self-serve.md): the user clicks the link we emailed,
 we look the `Site Request` up by its token, and — only now — fulfil it (create
 the `User`, insert the `Site` as that user, mark Fulfilled). Then we log them in
 and bounce them to the dashboard SPA, where they watch the Site go

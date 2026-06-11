@@ -1,7 +1,7 @@
 """Per-site deploy control plane — turn a booted golden bench VM into a serving
 Frappe site, and the HTTP readiness gate that proves it (Contract B).
 
-This is the controller side of plans/self-serve/03-deploy-site-script.md, the
+This is the controller side of the in-guest deploy (spec/14-self-serve.md), the
 seam `atlas.atlas.doctype.site.site` imports (`deploy_site`, `wait_for_http`). It
 is the sibling of `atlas.atlas.bench_image.build_bench`: drive an in-guest script
 over the SAME SSH-to-the-guest path (`connection_for_guest`), recording the op as
@@ -12,10 +12,10 @@ RENAME the baked `site.local` to `<fqdn>` (a directory move, since a bench-cli
 site's identity is its dir name) + reset the admin password + the production
 bring-up so the bench's own nginx serves the site on :80.
 
-Two functions, two execution sites (plan 03 "What runs where"):
+Two functions, two execution sites (spec/14-self-serve.md "What runs where"):
 
 - `deploy_site` drives `bench/deploy-site.py` IN THE GUEST over guest-SSH. It
-  generates the per-site Administrator password (D01-3: the db root password is
+  generates the per-site Administrator password (the db root password is
   baked + shared; the admin password is per-site, never baked) and returns it so
   the Site row can store it for the owner.
 - `wait_for_http` runs ON THE CONTROLLER, polling the guest's public /128 :80

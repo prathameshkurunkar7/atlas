@@ -1,13 +1,13 @@
 """Golden bench image control plane — bake a bench-preinstalled image by building
 INSIDE a plain guest over SSH, then snapshotting it.
 
-This is the controller side of plans/self-serve/01-golden-image.md, and the
+This is the controller side of the golden bench image (spec/08-images.md), and the
 direct sibling of `atlas.atlas.proxy.build_proxy`: provision a plain Ubuntu VM,
 upload the committed `bench/` tree, run `build.sh` over the SAME SSH-to-the-guest
 path the proxy build uses, then stop + snapshot the VM. That snapshot is the
 reusable "golden bench image" — a VM with bench-cli, the uv venv, the Frappe
 clone, MariaDB + Redis, AND a fully-created site baked under the fixed name
-`site.local`, so `deploy-site.py` (plan 03) only RENAMES that baked site to the
+`site.local`, so `deploy-site.py` (spec/14-self-serve.md) only RENAMES that baked site to the
 per-VM FQDN (a directory move) + resets its admin password, never paying the
 multi-minute `bench new-site` per signup.
 

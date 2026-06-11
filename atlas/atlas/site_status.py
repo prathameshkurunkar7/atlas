@@ -1,4 +1,4 @@
-"""The user-facing provisioning step view for a `Site` (plan 04 SPA work).
+"""The user-facing provisioning step view for a `Site` (spec/14-self-serve.md).
 
 `Site.status` is the controller's coarse lifecycle state (Pending → Provisioning
 → Deploying → Running, or Failed). The status page the verified user lands on

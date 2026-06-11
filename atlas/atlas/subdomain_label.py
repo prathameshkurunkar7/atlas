@@ -1,8 +1,8 @@
 """Contract-A subdomain rules, shared by `Site` and `Site Request`.
 
-The one routing string (plan 00, spec/14-self-serve.md) starts as a single DNS
+The one routing string (spec/14-self-serve.md) starts as a single DNS
 label the user picks. Two doctypes gate that label: `Site` (the real resource, at
-insert) and `Site Request` (the pre-verification holding row, plan 04). They must
+insert) and `Site Request` (the pre-verification holding row). They must
 enforce the *same* rules — otherwise a request could reserve a name `Site` would
 reject, or two requests pass and collide at fulfilment. Factor the rules here so
 there is one source of truth.
@@ -17,7 +17,7 @@ import frappe
 
 # A subdomain label that is not the user's to take. `www admin api …` are the
 # operational names a fleet reserves; everything else is taken at insert by the
-# FQDN uniqueness check. Frozen here (Contract A, plan 00); `Site` re-exports it.
+# FQDN uniqueness check. Frozen here (Contract A, spec/14-self-serve.md); `Site` re-exports it.
 RESERVED_SUBDOMAINS = frozenset(
 	{
 		"www",
@@ -72,7 +72,7 @@ def validate_reserved(subdomain: str | None) -> None:
 def is_taken(subdomain: str | None) -> bool:
 	"""True if a live `Site` already owns this label under the active domain.
 
-	Best-effort early check (plan 04): lets a signup form reject a taken name at
+	Best-effort early check (spec/14-self-serve.md): lets a signup form reject a taken name at
 	request time. NOT authoritative — the authoritative uniqueness is `Site`'s
 	FQDN key at insert (handle the race with a clean "taken" message there). A
 	Terminated Site's FQDN is gone (the row is deleted on terminate's VM path? no

@@ -4,12 +4,12 @@ Provisions a plain Ubuntu VM, builds bench-cli + `bench init` inside it over
 guest-SSH (`atlas.atlas.bench_image.build_bench`), stops it, and snapshots it.
 That snapshot is the reusable "golden bench image" self-serve site VMs clone
 from (`Virtual Machine Snapshot.clone_to_new_vm`) — the build-in-guest +
-snapshot pattern the proxy uses, applied to bench (plans/self-serve/01).
+snapshot pattern the proxy uses, applied to bench (spec/08-images.md).
 
-This is the ONE host fact plan 01 exists to prove (plan 01 "How it's proven"):
+This is the ONE host fact the golden image exists to prove:
 a VM baked this way actually has a working bench — `bench --version` responds
 over guest-SSH after the build. Everything else about the image (the routing
-identity, the site) is per-VM and lives in plan 03's deploy-site.py.
+identity, the site) is per-VM and lives in deploy-site.py (spec/14-self-serve.md).
 
 It is billable: one droplet + one Firecracker VM (kept Stopped after the
 snapshot, so it can be re-baked, or terminated once the snapshot exists). Run on
@@ -73,7 +73,7 @@ def _bake(server_name: str) -> dict:
 	print("[bench-image] building bench inside the guest (apt + clone + uv + node) ...")
 	bench_image.build_bench(vm.name)
 
-	# 2. The host fact plan 01 exists to prove: bench actually works in the guest.
+	# 2. The host fact the golden image exists to prove: bench actually works in the guest.
 	version = _assert_bench_works(vm)
 	print(f"[bench-image] bench responds in the guest: {version}")
 
