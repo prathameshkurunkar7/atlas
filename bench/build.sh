@@ -79,10 +79,15 @@ export DEBIAN_FRONTEND=noninteractive
 # the C toolchain the §1 DKMS zfs.ko build below needs — that build runs BEFORE
 # init's own build-essential install, so it stays here (init installing it again
 # is a no-op). pkg-config/libmariadb-dev are NOT pre-installed — they are only
-# needed by init's app-venv build, which pulls them in itself. ---
+# needed by init's app-venv build, which pulls them in itself. python3-pymysql
+# IS required up front: bench-cli runs on the bare system python3 (no venv), and
+# its mariadb_manager `import pymysql`s to secure the MariaDB root during init —
+# but pymysql sits in bench-cli's `admin` extra (declared deps = []), so init
+# crashes "No module named 'pymysql'" without it. The noble package (1.0.2)
+# covers the connect/Error usage init needs. ---
 apt-get update
 apt-get install -y --no-install-recommends \
-	ca-certificates curl git build-essential zfsutils-linux
+	ca-certificates curl git build-essential zfsutils-linux python3-pymysql
 
 # The Atlas guest boots the Firecracker `vmlinux`, which ships NO /lib/modules
 # tree and NO builtin ZFS — so `zfsutils-linux` (userspace only) leaves

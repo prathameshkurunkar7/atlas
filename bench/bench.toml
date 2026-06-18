@@ -53,10 +53,24 @@ queue_port = 11000
 # Workers are an array-of-tables: one [[workers]] block per group, each with its
 # queues + a process count. (The old `[workers]` table with default/short/long was
 # dropped in bench-cli — that form is now silently ignored, yielding a single
-# default group.) Two web/default workers, one dedicated to the long queue.
+# default group.)
+#
+# Each block MUST list a SINGLE queue. bench-cli's supervisor generator names a
+# worker program `atlas-worker-<queues-joined-by-comma>-<n>` and then splices that
+# name into the group's comma-separated `programs=` line — so a multi-queue block
+# (e.g. queues = ["default","short","long"]) produces `[program:atlas-worker-
+# default,short,long-1]`, whose commas make supervisord read it as three bogus
+# group members and abort the whole config ("names unknown program ...
+# atlas-worker-default"), so `bench start` never brings up redis/gunicorn. One
+# queue per block keeps every program name comma-free. Two default workers, one
+# each for short and long.
 [[workers]]
-queues = ["default", "short", "long"]
+queues = ["default"]
 count = 2
+
+[[workers]]
+queues = ["short"]
+count = 1
 
 [[workers]]
 queues = ["long"]
