@@ -2,11 +2,11 @@
 
 The bake recipe for the **bench-preinstalled image** self-serve sites land on. A
 freshly-provisioned VM from this image already has bench-cli, its uv venv, the
-Frappe clone + **ERPNext (version-16)**, MariaDB + Redis on a **mandatory ZFS
-pool**, nginx + supervisor configured and enabled, **a fully-created Frappe +
-ERPNext site baked under the fixed name `site.local`**, and the whole production
-stack **running and serving** — so a snapshot-booted clone comes up answering on
-`:80` (v4 **and** v6) with no deploy step. `deploy-site.py`
+Frappe clone + **ERPNext (version-16)**, MariaDB + Redis (the bench code and the
+MariaDB datadir on ZFS datasets), nginx + supervisor configured and enabled, **a
+fully-created Frappe + ERPNext site baked under the fixed name `site.local`**, and
+the whole production stack **running and serving** — so a snapshot-booted clone
+comes up answering on `:80` (v4 **and** v6) with no deploy step. `deploy-site.py`
 ([`../spec/14-self-serve.md`](../spec/14-self-serve.md)) then does only the
 per-VM work: **rename** the baked `site.local` dir to the FQDN + `bench setup
 nginx` to regenerate the vhost (`server_name <fqdn>` + reload) — no admin reset,
@@ -19,15 +19,23 @@ The spec slice is [`../spec/08-images.md`](../spec/08-images.md) (§ golden benc
 image); the self-serve flow it feeds is
 [`../spec/14-self-serve.md`](../spec/14-self-serve.md).
 
-**ZFS is now mandatory.** The current bench-cli's `bench init` sets up a ZFS pool
-unconditionally on Linux (the root-disk-zfs merge). The build VM is a single-disk
-droplet, so the pool is a preallocated **file vdev** on the root filesystem
-(`[volume] backing = "image"`); at init the `benches` dataset mounts at
-`/root/bench-cli/benches` and the `mariadb` dataset at `/var/lib/mysql`. Because
-both the bench code and the MariaDB data live on ZFS, `build.sh` orders MariaDB +
-the bench supervisord `After=` the ZFS mount at boot, and runs the bench-owned
-supervisord as a systemd unit (`atlas-bench.service`) so a cold boot of the
-snapshot brings the stack up unattended.
+**ZFS is enabled.** The current bench-cli makes ZFS **opt-in** (the optional-zfs
+merge): `bench init` sets up a pool only when `[volume] enabled = true`, which
+`bench.toml` sets. The build VM is a single-disk droplet with no spare block
+device, so the pool is a preallocated **file vdev** (`backing = "image"`, 7 GB at
+`/var/lib/bench-zfs/bench-pool.img`) — not `auto` (which would overwrite the
+quotas with 75%-of-free sizing). `bench init` mounts `bench-pool/benches` at
+`/root/bench-cli/benches` and `bench-pool/mariadb` at `/var/lib/mysql`, so BOTH
+the bench code and the MariaDB data live on ZFS. The Firecracker `vmlinux` ships
+no ZFS module, so `build.sh` §1 DKMS-builds `zfs.ko` against the running kernel
+(`linux-headers-$(uname -r)` + `zfs-dkms` + `modprobe zfs`) before init's volume
+step; the built `.ko` travels in the snapshot. On a cold boot the pool must
+auto-import + mount before MariaDB and the bench, so `build.sh` §7 enables
+`zfs-import-cache`/`zfs-mount`, orders MariaDB + nginx `After=zfs-mount.service`,
+and runs the bench-owned supervisord as a systemd unit (`atlas-bench.service`,
+ordered `After=` the ZFS mount + MariaDB, waiting in `ExecStartPre` until the
+benches mount and MariaDB's socket are up) so a cold boot brings the stack up
+unattended.
 
 **The golden image is a VM snapshot**, not a from-URL `Virtual Machine Image`.
 It is built *inside* a plain Ubuntu VM (this directory's `build.sh`, run over
@@ -42,14 +50,16 @@ host never boots.
 ```
 bench.toml      committed bench config — pins Frappe (version-16), the
                 localhost-only MariaDB root password (see its header), the
-                mandatory ZFS [volume] (file-backed pool), the supervisor +
-                nginx [production] config, and nginx :80 serving (http_port = 80)
-build.sh        install bench-cli + `bench init` (with the ZFS pool) INSIDE the
-                guest, install ERPNext, bake a `site.local` site (past the
+                supervisor + nginx [production] config, nginx :80 serving
+                (http_port = 80), and `[volume] enabled = true` (ZFS on a 7 GB
+                file vdev, benches + mariadb datasets)
+build.sh        install bench-cli + DKMS-build zfs.ko + `bench init` INSIDE the
+                guest (sets up the ZFS pool),
+                install ERPNext, bake a `site.local` site (past the
                 setup-wizard gate), `setup production`, add IPv6 listeners + mark
-                the vhost `default_server` (serves any Host), wire the boot
-                ordering + the supervisord systemd unit, and leave the stack
-                RUNNING + serving on v4 + v6
+                the vhost `default_server` (serves any Host), wire the
+                supervisord systemd unit, and leave the stack RUNNING + serving
+                on v4 + v6
 warm.sh         arm the build VM for a WARM snapshot capture (freshen unit +
                 pre-warmed production stack) — run after build.sh, before freeze
 deploy-site.py  per-site deploy, run IN A CLONE over guest-SSH by
@@ -64,7 +74,7 @@ README.md       this file
 
 The golden image carries a baked `site.local` and boots with the production stack
 already running and serving it (the `atlas-bench.service` systemd unit brings the
-bench-owned supervisord up after the ZFS mount + MariaDB). The production gunicorn
+bench-owned supervisord up after MariaDB). The production gunicorn
 is **multitenant** — `frappe.app:application` runs with no fixed `--site`, so it
 resolves the site from the request `Host` header **per request** (`get_site_name`),
 with nothing cached at boot. The bake also marks the vhost `default_server` so a
