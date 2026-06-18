@@ -108,3 +108,20 @@ class TestTenant(IntegrationTestCase):
 		vm.tenant = second.name
 		with self.assertRaises(frappe.ValidationError):
 			vm.save(ignore_permissions=True)
+
+	def test_tenant_stamped_from_create_payload(self) -> None:
+		# The Central contract (spec/16-central.md): Central drives a VM create as
+		# a service user and passes the target `tenant` as a field in the insert
+		# payload — no bespoke endpoint. Pin that the field persists verbatim
+		# through a plain insert (the path the SPA / run_doc_method / Central all
+		# share), reloaded from the DB rather than read off the in-memory doc.
+		server = _ensure_test_server()
+		image = make_image("tenant-test-image")
+		tenant = _make_tenant("payload@example.com", "cust_payload")
+
+		vm = make_virtual_machine(server, image, tenant=tenant.name)
+		self.assertEqual(
+			frappe.db.get_value("Virtual Machine", vm.name, "tenant"),
+			tenant.name,
+			"tenant supplied in the create payload is persisted",
+		)

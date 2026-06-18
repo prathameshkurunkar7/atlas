@@ -13,6 +13,17 @@ never runs for them.
 import frappe
 
 
+class NoCapacityError(frappe.ValidationError):
+	"""No Active server in the region can fit the requested machine.
+
+	Distinct from a generic validation failure so Central — which drives VM
+	creates as a service user (spec/16-central.md) after pre-checking
+	capability / billing / quota — can tell "region is full, retry / queue /
+	alert the operator" apart from "the request itself was bad". Subclasses
+	ValidationError, so the user-facing message and HTTP status are unchanged
+	for the dashboard path; only the exception type carries the extra signal."""
+
+
 def default_image() -> str:
 	"""The base image a user's machine provisions from.
 
@@ -62,13 +73,13 @@ def default_server(required_vcpus: float) -> str:
 		ignore_permissions=True,
 	)
 	if not servers:
-		frappe.throw("No capacity available — contact your operator.")
+		frappe.throw("No capacity available — contact your operator.", NoCapacityError)
 	for server in servers:
 		capacity = capacity_for_server(server)
 		budget = capacity["effective_vcpus"]
 		if budget is None or capacity["used_vcpus"] + required_vcpus <= budget:
 			return server
-	frappe.throw("No capacity available — contact your operator.")
+	frappe.throw("No capacity available — contact your operator.", NoCapacityError)
 
 
 def apply_user_defaults(virtual_machine) -> None:

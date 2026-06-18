@@ -11,6 +11,7 @@ frappe.in_test).
 import frappe
 from frappe.tests import IntegrationTestCase
 
+from atlas.atlas.placement import NoCapacityError
 from atlas.tests.fixtures import make_image, make_provider, make_server
 
 USER_EMAIL = "atlas-placement-user@example.com"
@@ -123,11 +124,17 @@ class TestPlacement(IntegrationTestCase):
 		self.assertEqual(vm.image, image.name)
 
 	def test_no_active_server_throws(self) -> None:
-		make_image("atlas-placement-image")
+		image = make_image("atlas-placement-image")
+		# setUp deactivates every image; re-assert active so default_image()
+		# resolves and the throw genuinely comes from the no-server branch (not
+		# from image resolution running first in apply_user_defaults).
+		frappe.db.set_value("Virtual Machine Image", image.name, "is_active", 1)
 		# A server exists but is not Active.
 		make_server(self.provider, title="atlas-placement-server")
 		frappe.set_user(_atlas_user())
-		with self.assertRaises(frappe.ValidationError):
+		# Typed NoCapacityError (a ValidationError subclass) so Central can tell
+		# "region full" apart from a bad request — spec/16-central.md.
+		with self.assertRaises(NoCapacityError):
 			self._new_machine()
 
 	def _full_4vcpu_server(self):
@@ -151,7 +158,7 @@ class TestPlacement(IntegrationTestCase):
 	def test_full_server_throws_at_default_factor(self) -> None:
 		# Default factor 1: a 4-vCPU server with 4 vCPUs used has no room.
 		self._full_4vcpu_server()
-		with self.assertRaises(frappe.ValidationError):
+		with self.assertRaises(NoCapacityError):
 			self._new_machine()
 
 	def test_overprovision_factor_opens_room_on_full_server(self) -> None:
