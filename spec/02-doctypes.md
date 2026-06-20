@@ -493,6 +493,7 @@ deletion.
 | `clone_source_rootfs` | Data                       |      | Y         |         | Internal, hidden. On-host snapshot rootfs to seed this VM's disk from (clone). Empty for a normal image-backed VM. `set_only_once`, `no_copy`. |
 | `clone_source_data_rootfs` | Data                  |      | Y         |         | Internal, hidden. On-host data-disk snapshot to seed this VM's data disk from (clone). Empty for a normal VM. `set_only_once`, `no_copy`. |
 | `warm_snapshot`    | Link → Virtual Machine Snapshot |    | Y         |         | Internal, hidden. The `Warm` snapshot this VM restores from (provision stages the memory pair + MMDS identity; see [05 § Warm snapshot fan-out](./05-virtual-machine-lifecycle.md#warm-snapshot-fan-out-one-golden-n-restored-clones)). Empty for every ordinary VM. `set_only_once`, `no_copy`. |
+| `build_mode`       | Select (`site`/`admin`)       |      | Y         |         | Internal, hidden. The bench bake mode this VM should deploy in — carried build VM → snapshot → clone, OR inherited from the base image when the VM is created from a promoted bench golden (`set_build_mode_default`) — so first-boot `deploy_site` maps the FQDN to the baked site (`site`) or the admin console (`admin`). Empty for an ordinary image-backed VM (treated as `site`). `set_only_once`, `no_copy`. See [08-images.md § golden bench image](./08-images.md#the-golden-bench-image-self-serve). |
 | `ipv6_address`     | Data                          |      | Y         |         | From the server's /124. Set in `before_insert`.                  |
 | `public_ipv4`      | Data                          |      | Y         |         | The attached public IPv4, denormalized from the `Reserved IP` row whose `virtual_machine` points here. Empty until one is attached. Maintained by `Reserved IP.attach()` / `detach()` (and cleared on terminate); never hand-edited. See [Reserved IP](#reserved-ip) and [06-networking.md](./06-networking.md). |
 | `mac_address`      | Data                          |      | Y         |         | Derived from `name`. Set in `before_validate`.                   |
@@ -638,6 +639,7 @@ and clone recreate the disks; see
 | `server`          | Link → Server                 |      | Y         |         | Denormalized from the VM so the snapshot is locatable without loading it. |
 | `status`          | Select                        | Y    | Y         | Pending | `Pending`, `Available`, `Failed`. Set by the controller after the copy Task. |
 | `source_image`    | Link → Virtual Machine Image  |      | Y         |         | The image the VM ran when snapshotted (provenance; the clone's kernel comes from it). |
+| `build_mode`      | Select (`site`/`admin`)       |      | Y         |         | For a golden bench snapshot, the bench bake mode the build VM was in — copied from the VM and carried onto a clone, where `deploy-site.py` reads it (`site` → rename the baked site to the FQDN; `admin` → map the FQDN to the admin console). Empty for a non-bench snapshot. `set_only_once`. See [08-images.md](./08-images.md#the-golden-bench-image-self-serve). |
 | `disk_gigabytes`  | Int                           |      | Y         |         | Disk size captured, so restore/clone restore the right size.     |
 | `data_disk_gigabytes` | Int                       |      | Y         | 0       | Data-disk size captured (`0` if the VM had no data disk).        |
 | `data_disk_mount_point` | Data                    |      | Y         |         | The data disk's mount point at snapshot time, carried so a clone reconstructs it faithfully. |
@@ -732,6 +734,7 @@ A kernel + rootfs pair, identified by a name.
 | `title`                  | Data   |      |           |         | Operator-chosen label; `title_field` for the form. `set_only_once`. |
 | `is_active`              | Check  |      |           | 1       |                                                      |
 | `default_disk_gigabytes` | Int    | Y    |           | 4       | `set_only_once`. Size of the pristine ext4 (per-VM disk grows from this). |
+| `build_mode`             | Select (`site`/`admin`) |  |       |         | `set_only_once`. The bench bake mode a promoted bench golden carries (`promote_to_image` copies it from the snapshot). A VM created from this image inherits it (`VirtualMachine.set_build_mode_default`), so its first-boot `deploy_site` maps the FQDN to the baked site (`site`) or the admin console (`admin`). Empty for an ordinary base image (→ `site`). See [08-images.md](./08-images.md#the-golden-bench-image-self-serve). |
 | `kernel_url`             | Data   |      |           |         | `set_only_once`. HTTPS URL of the uncompressed `vmlinux`. **Empty for a local image** (promoted from a snapshot — kernel reused from the snapshot's source image). |
 | `kernel_filename`        | Data   | Y    |           |         | `set_only_once`. Filename on the server.             |
 | `kernel_sha256`          | Data   |      |           |         | `set_only_once`. Hex digest of the kernel. Empty for a local image. |
@@ -1565,7 +1568,7 @@ is the durable output; the build VM is scratch.
 | Field | Type | Reqd | Read-only | Notes |
 | ----- | ---- | ---- | --------- | ----- |
 | `name` | series | Y | Y | `IMG-BUILD-#####` (`autoname: Expression`). A recipe is re-baked many times, so the name isn't the recipe. |
-| `recipe` | Select | Y |  | `bench` / `proxy` — the [recipe registry](../atlas/atlas/image_recipes.py) key. `set_only_once`. |
+| `recipe` | Select | Y |  | `bench-v16` / `bench-v15` / `bench-nightly` / `proxy` — the [recipe registry](../atlas/atlas/image_recipes.py) key (kept in lockstep with `recipe_names()`). The back-compat `bench` alias (→ `bench-v16`) is not an option. `set_only_once`. |
 | `title` | Data |  | Y | Denormalized from the recipe (e.g. "Golden bench image") for the list view. |
 | `server` | Link → Server | Y |  | The Active server the scratch build VM is provisioned on (no scheduler — principle #4). For a proxy recipe this also fixes the region. `set_only_once`. |
 | `region` | Data |  |  | Proxy recipes only; required when the recipe `is_proxy`. Drives the finalize hook + the produced VM's `region`. `set_only_once`. |
@@ -1574,6 +1577,7 @@ is the durable output; the build VM is scratch.
 | `build_virtual_machine` | Link → Virtual Machine |  | Y | The scratch VM this build provisioned + baked. |
 | `snapshot` | Link → Virtual Machine Snapshot |  | Y | **The output** — what site/proxy VMs clone from. |
 | `build_task` | Link → Task |  | Y | The guest `build.sh` run's Task row (stdout/stderr/exit). Linked even on a failed build. |
+| `build_inputs` | Code (JSON) |  | Y | The resolved input commits (frappe / erpnext / bench-cli SHAs) the bake actually built from, harvested from the build Task's `ATLAS_BUILD_*=` stamp. Matters most for `bench-nightly` (its `develop` branches float). |
 | `auto_register` | Check |  |  | Default on. If the recipe has a `registers_as`, wire the snapshot into that Atlas Settings field on success (bench → `default_bench_snapshot`). Ignored by recipes with nothing to register (proxy). |
 | `warm` | Check |  |  | Default off. Bake a **warm** golden: after the build, run the recipe's `warm_entrypoint` (production stack up + pre-warm + freshen unit), then capture memory + disk at one paused instant into a `kind=Warm` snapshot clones *resume*. Per-server; supersedes the server's previous warm row. Rejected for recipes without a `warm_entrypoint`. `set_only_once`. See [15 § The warm bake](./15-image-builder.md#the-warm-bake-warm). |
 | `terminate_build_vm` | Check |  |  | Default off. If set, terminate the scratch build VM after a successful snapshot. Off leaves it Stopped for re-bake / inspection (the snapshot is durable and outlives it — [14-self-serve.md](./14-self-serve.md)). |

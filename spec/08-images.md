@@ -405,9 +405,53 @@ single-tenant (one site per VM). In **admin** mode the equivalent identity step 
 setting `[admin].domain = <fqdn>` + `bench setup nginx`, mapping the FQDN to the
 admin app's vhost.
 
-Versions are pinned (bench-cli commit in `build.sh`, Frappe branch in
-`bench.toml`); bumping any is a deliberate update rolled as a new golden
-snapshot, the same discipline `proxy/build.sh`'s pins follow.
+**The bake mode rides snapshot → clone → first boot.** The build VM is stamped with
+the recipe's `build_mode` (`site`/`admin`); `Virtual Machine.snapshot()` copies it
+onto the golden snapshot, and `clone_to_new_vm` carries it onto the clone — so a
+customer VM knows on first boot what its FQDN should map to without the controller
+having to remember. The **promote → base-image** path carries it the same way: a
+promoted golden's `Virtual Machine Image` row stores the `build_mode`, and a VM
+created from it via the ordinary `image` field inherits the mode in `before_insert`
+(`set_build_mode_default`, only filling an unset value). So the admin product line
+works through the same `image` field the versioned site images use — a VM with
+`image = bench-v16-admin` deploys as an admin console without the caller restating the
+mode. `deploy_site` reads the clone's `build_mode` and passes
+`--mode admin` to the in-guest `deploy-site.py` only when it is admin (site mode is
+the unchanged default, no flag). The readiness/health probe is **mode-aware**: a
+Frappe site answers `/api/method/ping`, but the admin console is a **Flask** app with
+no Frappe ping route — its unauthenticated health endpoint is `/api/status` (200).
+Both the controller `wait_for_http` path (`readiness_path_for_mode`) and the in-guest
+`_serving` probe pick the right path from the mode, so an admin deploy doesn't report
+`serving=false` forever against a 404. The `_admin.conf` vhost bench-cli emits proxies
+`location /` (both `listen 80;` and `listen [::]:80;`) to the socket-activated admin
+gunicorn, so `/api/status` routes through over the same v6 path the edge proxy uses.
+
+**Versioned variants — V15 / V16 / Nightly.** The bench recipe is **not** a single
+golden: three recipes ship — `bench-v15`, `bench-v16`, `bench-nightly` — baked per
+Frappe/Bench release and promoted to base images named exactly `bench-v15` /
+`bench-v16` / `bench-nightly` (the Central Image name-match link,
+[15-image-builder.md](./15-image-builder.md), [16-central.md](./16-central.md)).
+They share the **one** committed `bench/` tree and `build.sh`; the only thing that
+varies is the per-version pins, which the controller injects without forking the
+tree: `bench.toml`'s `[bench].python` + `frappe` `[[apps]].branch` are **rendered**
+per recipe before upload, and the bench-cli ref + ERPNext branch ride the build
+command's env (`BENCH_CLI_REF` / `ERPNEXT_BRANCH`, which `build.sh` reads as
+`${VAR:-default}`). `bench-cli` is the build tool, not the framework — one pinned cli
+ref bakes all three (it reads the branch/Python from `bench.toml` and natively knows
+`version-15`/`version-16`/`develop`; `uv` fetches the requested interpreter). The
+nightly bake stamps the resolved Frappe/ERPNext/cli SHAs into `Image Build.build_inputs`
+since `develop` floats. A customer selects the version through the ordinary VM
+`image` field (the promoted base image); no new hot-path plumbing. Bumping any pin is
+a deliberate update rolled as a new bake + promote, the same discipline
+`proxy/build.sh`'s pins follow.
+
+Each version also ships an **admin variant** — `bench-v16-admin`, `bench-v15-admin`,
+`bench-nightly-admin` — identical pins but `build_mode = admin`, so the bake skips
+the site + ERPNext and produces the admin-console golden described above. They reuse
+the same `bench/` tree and version-injection; they differ from their site twins only
+in the mode (and so are cold-only, and never register as the self-serve
+`default_bench_snapshot`). They promote to base images named `bench-v<NN>-admin` — the
+Central name-match link, alongside the site images.
 
 ## Verification
 

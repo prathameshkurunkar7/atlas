@@ -20,9 +20,19 @@ set of whitelisted HTTP methods (see *The wire contract* below).
 3. **Expected bench images.** Central declares which bench images each Atlas is
    *expected* to offer (V15, V16, Develop…). Atlas **fetches** that list into a
    local `Central Image` catalog. Central sets the *expectation*; Atlas still
-   bakes each image with the existing Image Build pipeline
-   ([15-image-builder.md](./15-image-builder.md)). `Central Image.bake_status`
+   bakes each image with the existing Image Build pipeline — the `bench-v15` /
+   `bench-v16` / `bench-nightly` recipes ([15-image-builder.md](./15-image-builder.md))
+   — and **promotes** each golden to a base image. `Central Image.bake_status`
    shows expectation-vs-reality per image.
+
+   **The link is an exact name-match.** `upsert_central_images` sets a `Central
+   Image`'s `local_image` (and flips `bake_status` to **Baked**) iff a
+   `Virtual Machine Image` of the **same name** as `Central Image.image_name`
+   exists. So the operator (or the promote default) must name the promoted image
+   exactly `bench-v15` / `bench-v16` / `bench-nightly` — which is what each bench
+   recipe's `promote_image_name` defaults to. A mismatch leaves the `Central Image`
+   orphaned at `Expected`. Nothing else links them: there is no push from Central,
+   no `series`-based fallback — the name is the whole contract.
 4. **Event reporting.** Atlas reports every Virtual Machine lifecycle event
    (created / status changed / terminated), Snapshot completion, and Server
    state change back to Central, so the global dashboard reflects fleet state in
