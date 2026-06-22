@@ -144,10 +144,178 @@ def run_smoke(reuse: bool = True, keep: bool = True) -> None:
 			_assert_inbound_https("-4", reserved_ipv4, hostname)
 			_assert_inbound_https("-6", proxy_vm.ipv6_address, hostname)
 			print(f"[e2e] self-serve site live at https://{hostname} over v4 AND v6 OK")
+
+			# 6. Bench self-routing (spec/18, one-way push): the SAME running site VM is a
+			#    bench VM — its golden clone carries the full bench-cli stack AND the
+			#    in-guest `atlas-route` client. From INSIDE the guest, `atlas-route
+			#    register` reserves a name BEFORE `bench new-site` (the controller resolves
+			#    the VM from the v6 source /128, no parameter), the proxy serves it, a
+			#    forced-create-failure rollback leaves no stray, drop+deregister stops it,
+			#    `list` clears a manufactured stray, and a direct terminate cleans up. This
+			#    is the host fact only a real guest over IPv6 can prove (the converge logic
+			#    is unit-covered, test_bench_routing). Pass the proxy so the step proves the
+			#    proxy actually SERVES the guest-reserved site and STOPS on deregister.
+			_assert_bench_self_routing(server.name, site_vm_name, proxy_vm, region, domain)
 		finally:
 			_teardown(reserved, proxy_vm.name, _TEST_SUBDOMAIN, domain, _TEST_EMAIL)
 			tls_issuance._cleanup_tls_doctypes(config)
 			_restore_root_domains(quieted)
+
+
+# --- bench self-routing (spec/18, the one-way push model) ----------------
+
+# A second subdomain the bench owner spins up from inside the guest — distinct from
+# the Atlas-deployed `acme`, so the row `register` reserves is unambiguously the
+# guest-created one.
+_BENCH_SELF_ROUTE_SUBDOMAIN = "ws"
+
+# A label the guest reserves but never creates an on-disk site for — a manufactured
+# STRAY, so `list` finds a routed label with no matching site and clears it.
+_BENCH_STRAY_SUBDOMAIN = "stray"
+
+# The fixed, shared MariaDB root password the bake sets (bench/bench.toml
+# `root_password`). `drop-site` needs root to drop the site DB and prompts for it over
+# a non-interactive SSH session; we pipe this in. Kept in step with bench.toml.
+_BAKED_MARIADB_ROOT_PASSWORD = "mariadb-root"
+
+
+def _assert_bench_self_routing(
+	server_name: str, site_vm_name: str, proxy_vm, region: str, domain: str
+) -> None:
+	"""Host-fact proof of spec/18's ONE-WAY PUSH model on the live site VM (a bench VM),
+	driven by the REAL in-guest `atlas-route` client over IPv6 — the only run that can
+	prove the trust root (the controller resolves the VM from the request's v6 source
+	/128, no parameter):
+
+	  1. `register ws` from inside the guest reserves the name BEFORE `bench new-site`
+	     (the row appears on register, not after create) and the PROXY serves it.
+	  2. A FORCED `bench new-site` failure → the client's `deregister` rollback leaves
+	     NO stale Subdomain.
+	  3. `bench drop-site` then `deregister` → the route DROPS from the proxy live map.
+	  4. `list` from inside the guest returns this VM's routes; a manufactured stray
+	     (a registered label with no on-disk site) is cleared by the client's per-stray
+	     `deregister`.
+	  5. A direct `VirtualMachine.terminate` leaves NO Subdomain (Component F, total).
+
+	The site VM's own v6 is the routing target. There is NO pull, NO sweeper, and the
+	controller never SSHes the guest to discover routes — every write is the guest's
+	`atlas-route` POST, arbitrated controller-side. The converge LOGIC is unit-covered
+	(test_bench_routing); this run proves the IPv6 origin + the proxy serving it."""
+	from atlas.atlas.ssh import connection_for_guest, run_ssh, ssh_key_file
+
+	label = _BENCH_SELF_ROUTE_SUBDOMAIN
+	fqdn = f"{label}.{domain}"
+	site_v6 = frappe.get_doc("Virtual Machine", site_vm_name).ipv6_address
+	acme_map = {_TEST_SUBDOMAIN: site_v6}
+	connection = connection_for_guest(frappe.get_doc("Virtual Machine", site_vm_name))
+
+	def guest(command: str, timeout: int = 600) -> tuple[str, str, int]:
+		with ssh_key_file(connection.ssh_private_key) as key_path:
+			return run_ssh(connection, key_path, command, timeout_seconds=timeout)
+
+	bench = "/home/frappe/bench-cli/benches/atlas"
+
+	def new_site_cmd(site_fqdn: str) -> str:
+		return (
+			f'sudo -u frappe bash -lc "export PATH=/home/frappe/bench-cli:$PATH; cd {bench}; '
+			f'bench -b atlas new-site {site_fqdn} --admin-password atlas-baked --apps erpnext"'
+		)
+
+	# 1. REGISTER reserves the name BEFORE the create (block-at-create by ordering). The
+	#    POST traverses IPv6, so the controller resolves THIS VM from its v6 source /128
+	#    — no VM-identifying argument. Assert the row exists IMMEDIATELY (the
+	#    authoritative insert is register's, not a later pull), points at this VM, and is
+	#    active; then create the local site and prove the PROXY serves it end to end.
+	assert not frappe.db.exists("Subdomain", label), "a stale Subdomain exists before register"
+	_stdout, stderr, code = guest(f"atlas-route register {label}")
+	assert code == 0, f"guest atlas-route register failed: {stderr[-500:]}"
+	row = frappe.get_doc("Subdomain", label)
+	assert row.virtual_machine == site_vm_name and row.active, (
+		f"register did not reserve {label} for this VM (vm={row.virtual_machine}, active={row.active})"
+	)
+	# The reservation resolved this VM by its v6 source: the audit row carries this VM
+	# and its /128 (the trust root, proven on the real origin).
+	audit = frappe.get_all(
+		"Bench Routing Audit",
+		filters={"endpoint": "register", "label": label, "status": "ok"},
+		fields=["vm", "source_ip"],
+	)
+	assert audit and audit[0]["vm"] == site_vm_name, f"register audit did not resolve this VM: {audit}"
+	assert audit[0]["source_ip"] == site_v6, (
+		f"register resolved a source /128 ({audit[0]['source_ip']}) that is not this VM's v6 ({site_v6})"
+	)
+	_stdout, stderr, code = guest(new_site_cmd(fqdn))
+	assert code == 0, f"guest new-site failed: {stderr[-500:]}"
+	proxy.reconcile_proxy(proxy_vm.name)
+	_assert_live_map(proxy_vm.name, {**acme_map, label: site_v6})
+	print(f"[e2e] bench self-routing: guest-reserved {fqdn} SERVED by the proxy OK")
+
+	# 2. CREATE-FAILURE ROLLBACK: register a fresh label, force the create to fail
+	#    (a deliberately invalid new-site), then deregister — the rollback — and assert
+	#    NO stale Subdomain survives. This is the orphan-free path (register first,
+	#    deregister on create-failure).
+	rollback_label = f"{label}-fail"
+	_stdout, stderr, code = guest(f"atlas-route register {rollback_label}")
+	assert code == 0, f"register for the rollback case failed: {stderr[-500:]}"
+	assert frappe.db.exists("Subdomain", rollback_label), "register did not reserve the rollback label"
+	# A new-site with a bogus app name fails AFTER the reservation, the create-failure case.
+	bogus = (
+		f'sudo -u frappe bash -lc "export PATH=/home/frappe/bench-cli:$PATH; cd {bench}; '
+		f'bench -b atlas new-site {rollback_label}.{domain} --admin-password atlas-baked --apps no_such_app_xyz"'
+	)
+	_stdout, _stderr, fail_code = guest(bogus)
+	assert fail_code != 0, "the forced new-site failure unexpectedly succeeded"
+	_stdout, stderr, code = guest(f"atlas-route deregister {rollback_label}")
+	assert code == 0, f"rollback deregister failed: {stderr[-500:]}"
+	assert not frappe.db.exists("Subdomain", rollback_label), (
+		"the create-failure rollback left a stale Subdomain"
+	)
+	print("[e2e] bench self-routing: create-failure rollback left no stale route OK")
+
+	# 3. DROP + DEREGISTER: drop the site in the guest, then deregister — the route DROPS
+	#    from the proxy live map (deregister's on_trash deconverges). `drop-site` drops
+	#    the site DB, so it needs the MariaDB ROOT password; bench-cli prompts for it over
+	#    a non-interactive SSH session, so pipe in the baked, shared root password.
+	drop = (
+		f'sudo -u frappe bash -lc "export PATH=/home/frappe/bench-cli:$PATH; cd {bench}; '
+		f'echo {_BAKED_MARIADB_ROOT_PASSWORD} | bench -b atlas drop-site {fqdn} --no-backup --force"'
+	)
+	_stdout, stderr, code = guest(drop)
+	assert code == 0, f"guest drop-site failed: {stderr[-500:]}"
+	_stdout, stderr, code = guest(f"atlas-route deregister {label}")
+	assert code == 0, f"guest deregister failed: {stderr[-500:]}"
+	assert not frappe.db.exists("Subdomain", label), "deregister did not delete the dropped site's route"
+	proxy.reconcile_proxy(proxy_vm.name)
+	_assert_live_map(proxy_vm.name, acme_map)
+	print(f"[e2e] bench self-routing: dropped+deregistered {fqdn} STOPPED serving at the proxy OK")
+
+	# 4. LIST + STRAY CLEAR: register a label the guest never builds a site for (a
+	#    manufactured stray), then `atlas-route list` — the client enumerates this VM's
+	#    routes, diffs against on-disk sites/, finds the stray (no matching dir), and
+	#    issues a per-stray deregister. Assert it was cleared.
+	stray = _BENCH_STRAY_SUBDOMAIN
+	_stdout, stderr, code = guest(f"atlas-route register {stray}")
+	assert code == 0, f"register for the stray case failed: {stderr[-500:]}"
+	assert frappe.db.exists("Subdomain", stray), "register did not reserve the stray label"
+	stdout, stderr, code = guest("atlas-route list")
+	assert code == 0, f"guest atlas-route list failed: {stderr[-500:]}"
+	assert not frappe.db.exists("Subdomain", stray), (
+		f"list did not clear the stray {stray} (stderr: {stderr[-500:]})"
+	)
+	print("[e2e] bench self-routing: list cleared a manufactured stray OK")
+
+	# 5. TERMINATE (Component F, the only controller-side teardown): re-register a route
+	#    so the VM owns one, then a direct VM terminate must leave NO Subdomain for it.
+	_stdout, _stderr, _code = guest(f"atlas-route register {label}")
+	assert frappe.db.count("Subdomain", {"virtual_machine": site_vm_name}) > 0, (
+		"expected the VM to own a Subdomain before terminate"
+	)
+	frappe.db.commit()
+	frappe.get_doc("Virtual Machine", site_vm_name).terminate()
+	assert frappe.db.count("Subdomain", {"virtual_machine": site_vm_name}) == 0, (
+		"VirtualMachine.terminate left a stale Subdomain"
+	)
+	print("[e2e] bench self-routing: terminate cleaned up the VM's Subdomains OK")
 
 
 # --- golden snapshot + base image ----------------------------------------
