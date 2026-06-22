@@ -241,11 +241,48 @@ alternatives they beat, kept so a future change knows what it is overturning.
      snippet would be the gratuitous-custom we are avoiding.
 
    The systemd drop-in is **host-boot-verifiable only** — the compose gate
-   foreground-runs nginx and never loads systemd. Two open tightenings, both weak
-   wins deferred: `user root;` → `user nginx;` (workers run as root on the
-   wildcard-key box for no reason; the master opens the 0600 cert and workers
-   inherit the fd), and swapping the placeholder cert *content* for the Debian
-   `ssl-cert` snakeoil.
+   foreground-runs nginx and never loads systemd. One open tightening, a weak win
+   deferred: swapping the placeholder cert *content* for the Debian `ssl-cert`
+   snakeoil.
+
+8. **Workers drop privilege; the master stays root.** `nginx.conf` sets
+   `user nginx;` (the nginx.org `.deb`'s stock locked/nologin account), so the
+   master keeps root only to bind `:80`/`:443` + the `10000-19999` stream pool and
+   setuid the workers — the workers that parse untrusted internet bytes, run the
+   routing Lua, and L4-forward raw tenant TCP run unprivileged. The trade is a
+   handful of `build.sh §7` ownership facts the worker write path depends on:
+   `/var/lib/nginx` is `root:nginx 0770` because the worker writes `map.json` /
+   `stream-map.json` from a timer (rename needs write+exec on the parent), `acme/`
+   is `root:nginx 0750` (worker read of the `.well-known` root), while `certs/` +
+   the wildcard privkey stay **root-only** — they're read by the master at config
+   parse, never by a worker, so the key never needs to be group-readable. No
+   systemd `User=` / `NoNewPrivileges` / `ProtectSystem=strict` is added: each
+   would break the master's low-port bind or the master→worker setuid; the
+   `user nginx;` directive is the correct mechanism. The privilege drop is a
+   **runtime** fact `nginx -t` can't see — a non-group-writable state dir would
+   pass `-t` and fail silently at the first worker map dump — so `test_build.py`
+   carries three assertions for it (master-is-root/workers-are-nginx, a forced
+   `POST /dump` re-read, privkey-stays-root-only) and the compose gate exercises
+   the nginx-user worker end to end. A host bake is the final pre-ship
+   confirmation.
+
+9. **Baseline DoS + recon hardening lives in `nginx.conf`, not a WAF.** The
+   front-end carries the cheap, always-safe CIS hardening directly: slow-read /
+   slowloris caps (`client_header_timeout` / `client_body_timeout` /
+   `send_timeout` = 15s, `keepalive_timeout 10`), an explicit
+   `client_max_body_size 50m` matched to the tenant bench's own nginx
+   ([bench.toml](../bench/bench.toml) `[nginx]`) so the proxy is never the tighter
+   limit and never silently 413s a legitimate upload, `proxy_hide_header Server` /
+   `X-Powered-By` so each tenant's gunicorn/werkzeug stack + version doesn't leak
+   (nginx re-emits only its own `server_tokens off` bare `Server: nginx`), and
+   `error_log … notice` on both planes to capture upstream-connect failures and
+   rejected requests the default `error` level drops. Per-IP `limit_conn` /
+   `limit_req` are deliberately **not** set: all v4 tenants share one reserved-IPv4
+   1:1 NAT, so `$binary_remote_addr` collapses toward a single key and a per-IP
+   limit would punish everyone at once (Frappe throttles auth at the backend). The
+   remaining CIS gaps (the plaintext south hop → WireGuard, TLS-1.3-only as a
+   policy call, a JSON access `log_format`, a rebake-on-CVE SLA) are tracked in
+   [llm/references/cis-nginx-benchmark-gaps.md](../llm/references/cis-nginx-benchmark-gaps.md).
 
 ## Accepted limitations
 
