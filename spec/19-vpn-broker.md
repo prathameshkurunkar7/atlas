@@ -25,9 +25,9 @@ is reachable from the v6 internet, but:
   v6-only VM.
 - **Public exposure is not private access.** Reaching a port over the tunnel is
   independent of whether that port is exposed to the public internet. The owner
-  gets every port their VM actually serves on its address — including ones a
-  future per-VM public firewall ([09-roadmap.md](./09-roadmap.md)) would keep off
-  the public internet — without opening them to the world.
+  gets every port their VM actually serves on its address — including ones the
+  per-VM public firewall ([20-firewall.md](./20-firewall.md)) keeps off the
+  public internet — without opening them to the world.
 - **Scoped to exactly one VM.** The tunnel is not a route into anything wider: it
   reaches the target VM's `/128` and the host **drops** anything else. The client
   cannot hop through it to another VM, to the host, or to the internet.
@@ -97,9 +97,19 @@ Three independent layers, defense in depth:
    **not** restrict the *destination* of a decrypted inbound packet. So without
    this rule a client could set `dst=<other-vm-v6>` and the host would route it.
    The `drop` closes that: anything from this interface that is not destined to
-   this VM — another VM, the host, the internet — is dropped. This mirrors
-   `reserved_ip_nat.py`'s forward accept and survives the future per-VM-firewall
-   policy flip ([09-roadmap.md](./09-roadmap.md)).
+   this VM — another VM, the host, the internet — is dropped.
+
+   **These two rules are `insert`ed at the *head* of the forward chain, not
+   appended.** `vm-network-up.py` lays down a broad per-VM accept for *every* VM
+   (`ip6 daddr <vm> oifname <veth> accept`) that does **not** constrain the input
+   interface. `accept` is terminal, so an *appended* tunnel `drop` is shadowed: a
+   tunnel packet addressed to *another* VM matches that VM's accept first and is
+   forwarded — the exact leak the drop exists to stop. Inserting the pair at the
+   head (drop first, then accept, leaving `[accept, drop, …per-VM…]`) makes the
+   tunnel's verdict win. This survives the per-VM public firewall
+   ([20-firewall.md](./20-firewall.md)), which lives in a *separate*
+   higher-priority chain and is itself scoped to the public uplink, so it never
+   touches tunnel ingress.
 3. **The network namespace.** Even granting a hostile inner packet, the host
    routes only `<vm-v6>/128` into a netns that contains exactly one VM; there is
    no path from one VM's netns to another.

@@ -137,6 +137,7 @@ keep it the source of truth.
 17. [The TCP proxy](./17-tcp-proxy.md)
 18. [Self-service subdomain routing (bench-admin sites)](./18-bench-self-routing.md)
 19. [The VPN broker (WireGuard tunnels)](./19-vpn-broker.md)
+20. [The per-VM public firewall](./20-firewall.md)
 
 ## First run on a fresh site
 
