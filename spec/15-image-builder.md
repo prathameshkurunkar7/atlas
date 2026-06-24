@@ -214,9 +214,9 @@ in-place edit (the same shape as `Site` / `Virtual Machine`).
    re-raises (fail loud — the job log carries the traceback). No-op if the build
    has moved past `Draft`. Every transition is committed and pushed to the
    operators' realtime room (`image_build_progress`, doc-scoped) so the desk
-   form's live checklist updates without a reload — the `Site.auto_provision` /
-   `/site-status` pattern ([14-self-serve.md](./14-self-serve.md)) applied to a
-   desk form.
+   form's live checklist updates without a reload — the same per-transition
+   commit-then-report pattern `Site.auto_provision`
+   ([14-self-serve.md](./14-self-serve.md)) uses, here pushed to a desk room.
 
 4. **`rebake()`** resets an `Available`/`Failed` row to `Draft` and re-enqueues —
    the operator's retry button. The whole pipeline is idempotent (`build.sh`

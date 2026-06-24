@@ -29,12 +29,12 @@ keep it the source of truth.
   **pre-checks capability, billing, and quota** before it asks Atlas to act.
   Atlas stays policy-unaware — it attributes each resource to a `Tenant`
   ([02-doctypes.md § Tenant](./02-doctypes.md#tenant)) for grouping and enforces
-  only **physical capacity**. Two Atlas-local roles remain: the operator
-  (System Manager) and the owner-scoped **Atlas User** who owns the machines they
-  create (see [11-user-ui.md](./11-user-ui.md)). The frappe-ui dashboard SPA that
-  first introduced the Atlas User has been retired now that Central fronts the
-  user experience; the owner-scoping stays, because self-serve signup users
-  depend on it until signup moves behind Central.
+  only **physical capacity**. Atlas is **operator/Central-facing only** (System
+  Manager): there is no end-user role or owner-scoping, and no in-app end-user
+  UI. The frappe-ui dashboard SPA and the self-serve signup on-ramp (and their
+  `Atlas User` role) were retired now that Central fronts the user experience and
+  drives site/VM creation via `create_site` / `create_vm`
+  (see [11-user-ui.md](./11-user-ui.md), [14-self-serve.md](./14-self-serve.md)).
 - No CLI. We will build one later on top of the same Frappe APIs.
 - No private networking between VMs, no overlay. No inbound IPv4 to the
   guest and no per-VM public IPv4 (outbound v4 is via host NAT44).
@@ -64,34 +64,30 @@ keep it the source of truth.
   `Atlas Settings.overprovision_factor` (default 1), and a host whose size we
   can't price counts as unlimited.
 - No metrics or alerting. `journalctl` is enough.
-- One in-app UI, two audiences. **Operators** use Desk (`/app/atlas`) — the
-  whole fleet, providers, servers, image sync, ad-hoc tasks. **Users** are
-  owner-scoped `Atlas User` accounts that can touch only their own Virtual
-  Machines, Images (read-only, shared), and Snapshots; Server, Task, and the
-  Settings Singles are invisible and access-denied to them. That boundary lives
-  in the **permission layer**, so it holds for any client. A frappe-ui SPA at
-  `/dashboard` was the user surface for one iteration and has been **retired**
-  now that Central is the front door. See [11-user-ui.md](./11-user-ui.md).
+- One in-app UI, one audience. **Operators** use Desk (`/app/atlas`) — the whole
+  fleet, providers, servers, image sync, ad-hoc tasks. There is no end-user
+  audience in Atlas: the frappe-ui `/dashboard` SPA and the self-serve signup
+  on-ramp (and the `Atlas User` role + owner-scoping they relied on) were
+  **retired** now that Central is the front door. See
+  [11-user-ui.md](./11-user-ui.md).
 - **Central is the front door.** Above Atlas sits **Central**
   ([16-central.md](./16-central.md)) — the global control plane that owns
   identity, teams, and billing and is the face of all customer actions. Central
   drives a regional Atlas by **logging in as a single service user and calling
-  the existing whitelisted methods**, passing the target `Tenant` in the request
-  payload. Atlas exposes no separate command API; Central is just an
+  whitelisted methods**: the lifecycle methods, plus the dedicated
+  `create_vm` / `create_site` endpoints that get-or-create the `Tenant` and insert
+  the resource. Atlas exposes no separate command API; Central is just an
   authenticated client of the existing Frappe endpoints. The operator Desk
-  continues to work; Central's console is now the user-facing surface, which is
-  why the `/dashboard` SPA was removed.
+  continues to work; Central's console is the customer-facing surface.
 
 ## Operating principles
 
 1. **Desk is the operator UI.** Every *operator* operation is a DocType, a
    button on a DocType, or a server method on a DocType, rendered in Desk — no
-   custom operator pages. *Users* are owner-scoped `Atlas User` accounts
-   ([11-user-ui.md](./11-user-ui.md)): the same DocTypes and whitelisted methods,
-   scoped by the permission layer to the user's own resources, with no
-   user-specific server-side logic or API of their own. (A frappe-ui SPA at
-   `/dashboard` was their surface for one iteration; it was retired when Central
-   became the front door — the owner-scoping it relied on stays.)
+   custom operator pages. There is no end-user UI in Atlas: Central is the
+   customer-facing front door ([11-user-ui.md](./11-user-ui.md),
+   [16-central.md](./16-central.md)), driving creation via `create_vm` /
+   `create_site` and reading state back via events / polls.
 2. **The Frappe site is the source of truth.** A server is a cache; we can
    rebuild its on-disk state from the Frappe database. We do not scrape state
    back from the server.
@@ -389,7 +385,7 @@ certbot-dns-route53, openssl, boto3) and fails its preflight with a clear
 message if they are absent.
 
 The **self-serve site** use case (`self_serve_site.run_smoke`) is the
-superset of all of the above: it drives the real signup → email-verify →
+superset of all of the above: it drives the real `create_site` →
 golden-image site VM → deploy → HTTP 200 → subdomain → off-droplet HTTPS
 flow on **both IPv4 and IPv6**. It reuses `proxy_vm`'s proxy + reserved-IP
 helpers, `tls_issuance`'s real LE-staging producer chain, and `bench_image`'s
@@ -397,8 +393,8 @@ golden-snapshot bake, so it has the same preconditions (the `atlas_tls_*`
 config keys + controller-host deps) and skips cleanly on a bare site. It
 needs a golden bench snapshot: it uses `Atlas Settings.default_bench_snapshot`
 if set + Available, else bakes one inline before any billable site provision.
-It also asserts the **Contract-C negative** on the real path — an unverified
-`Site Request` provisions no Site and no VM. Like `tls_issuance`, it is
+It also asserts the mirror row Central reflects and the `Tenant` stamp on the
+real path. Like `tls_issuance`, it is
 invoked directly (not folded into `run_all_smoke`); its `auto_provision`
 chain is driven by the **background worker** (the same worker the VM
 provisioning e2e relies on), so the worker must be up. It also rides the

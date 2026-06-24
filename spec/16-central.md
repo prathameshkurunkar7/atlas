@@ -34,9 +34,9 @@ set of whitelisted HTTP methods (see *The wire contract* below).
    orphaned at `Expected`. Nothing else links them: there is no push from Central,
    no `series`-based fallback — the name is the whole contract.
 4. **Event reporting.** Atlas reports every Virtual Machine lifecycle event
-   (created / status changed / terminated), Snapshot completion, and Server
-   state change back to Central, so the global dashboard reflects fleet state in
-   near-real time.
+   (created / status changed / terminated), **Site** lifecycle event (created /
+   status changed), Snapshot completion, and Server state change back to Central,
+   so the global dashboard reflects fleet state in near-real time.
 
 ## Central as the front door
 
@@ -51,17 +51,20 @@ ordinary authenticated Frappe client:
 - **One service user.** Central authenticates to a regional Atlas as a single
   service user (a Frappe API key/secret), the same `token key:secret` header the
   telemetry client uses in reverse. It is *not* a per-customer login.
-- **Existing whitelisted methods are the command surface.** Central calls the
-  standard controller methods — `Virtual Machine.provision` /
-  `start` / `stop` / `restart` / `pause` / `resume` / `snapshot` / `rebuild` /
-  `resize` / `terminate`, document insert via `/api/v2/document`,
-  `run_doc_method` — the same surface Desk drives. Atlas adds no inbound command
-  endpoint.
-- **Tenant travels in the payload.** Central passes the target `Tenant`
-  ([02-doctypes.md § Tenant](./02-doctypes.md#tenant)) as a field on the create
-  call. The controller stamps it `set_only_once` / immutable; it is
-  **attribution only** — it does not gate permissions today (owner-scoping is
-  unchanged, [11-user-ui.md](./11-user-ui.md)).
+- **Whitelisted methods are the command surface.** Lifecycle actions are the
+  standard controller methods — `Virtual Machine.provision` / `start` / `stop` /
+  `restart` / `pause` / `resume` / `snapshot` / `rebuild` / `resize` /
+  `terminate`, `run_doc_method` — the same surface Desk drives. **Creation** has
+  two dedicated operator endpoints that get-or-create the `Tenant` and insert the
+  resource in one call: `atlas.atlas.api.provision.create_vm(central_reference,
+  …)` and `atlas.atlas.api.site.create_site(central_reference, subdomain, …)`
+  (the self-serve site, [14-self-serve.md](./14-self-serve.md)). Both return the
+  mirror row Central reflects. Atlas adds no other inbound command endpoint.
+- **Tenant is the attribution key.** The create endpoints get-or-create the
+  `Tenant` ([02-doctypes.md § Tenant](./02-doctypes.md#tenant)) from
+  `central_reference` and stamp it `set_only_once` on the resource. Atlas has **no
+  end-user `owner` scoping** — the `tenant` link is how a resource is tied back to
+  a Central team ([11-user-ui.md](./11-user-ui.md)).
 - **Authorization split.** Central **pre-checks** capability, billing, and
   quota / entitlement before it calls. Atlas **trusts that session** — it runs
   no `fc_teams` / capability engine of its own — and enforces only what only the
@@ -112,13 +115,22 @@ exactly like `DigitalOceanSettings.test_connection`:
 
 Reporting is wired with `doc_events` in `hooks.py` (no controller edits) →
 `atlas/atlas/central_report.py`. A status transition on a `Virtual Machine`,
-`Virtual Machine Snapshot`, or `Server`, and a VM `after_insert`, enqueue a
-background `deliver` job (`enqueue_after_commit=True`, so a rolled-back
+`Site`, `Virtual Machine Snapshot`, or `Server`, and a VM / `Site` `after_insert`,
+enqueue a background `deliver` job (`enqueue_after_commit=True`, so a rolled-back
 transaction is never reported). The job POSTs to Central and records the outcome
 in `Central Settings.status`. Everything is gated on
 `Central Settings.enabled`, so a site without Central configured pays nothing,
-and a delivery failure is logged to the Error Log — it never blocks a VM
+and a delivery failure is logged to the Error Log — it never blocks the
 operation.
+
+The event types: `vm.created` / `vm.status_changed` / `vm.deleted`,
+`site.created` / `site.status_changed`, `snapshot.completed`, and
+`server.status_changed`. The **`site.status_changed` for `Running`** carries the
+tenant handoff in its payload — the live `url` and the baked `admin_password`
+([14-self-serve.md](./14-self-serve.md)); earlier site transitions carry neither
+(there is no handoff to give yet). `atlas.atlas.api.site.get_site(name)` is the
+poll equivalent of the site events, returning the same shape for Central to
+self-heal a missed delivery.
 
 **Deferred (durable delivery).** v1 is fire-and-forget: an event is lost if
 Central is down when its job runs. The planned upgrade is a `Central Event`
@@ -143,9 +155,9 @@ The route names and payloads are the single external dependency; the whole
 contract is absorbed in `atlas/atlas/central.py` (`CentralClient`), so a change
 on Central's side is a one-file edit here.
 
-Every VM event payload carries `central_reference` — the owning team, resolved
-from the VM's `Tenant` (None for operator-owned VMs) — so Central can attribute
-the event to a tenant without a reverse lookup.
+Every VM and Site event payload carries `central_reference` — the owning team,
+resolved from the resource's `Tenant` (None for operator/e2e resources) — so
+Central can attribute the event to a tenant without a reverse lookup.
 
 ## Reconcile (Central → Atlas)
 
