@@ -22,7 +22,9 @@ class Firewall(Document):
 
 	def _assert_one_per_virtual_machine(self) -> None:
 		"""One firewall per VM (the per-VM model): a VM's public surface is a single
-		set of allowed ports, not several overlapping ones."""
+		set of allowed ports, not several overlapping ones. The real guarantee is the
+		`unique` index on `virtual_machine` (firewall.json) — this check only turns the
+		race-safe DB constraint into a friendly message on the common, non-racing path."""
 		if frappe.db.exists("Firewall", {"virtual_machine": self.virtual_machine}):
 			frappe.throw(_("A Firewall already exists for {0}").format(self.virtual_machine))
 

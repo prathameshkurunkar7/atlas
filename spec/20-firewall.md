@@ -100,7 +100,9 @@ disk** with no Frappe DB:
 
 ## The doctype and the apply path
 
-- **Firewall** (one per VM): `virtual_machine` (immutable), denormalized `server`
+- **Firewall** (one per VM — a DB `unique` index on `virtual_machine`, so the rule
+  holds even under concurrent inserts; the controller's `exists` check is just the
+  friendly message over it): `virtual_machine` (immutable), denormalized `server`
   / `tenant`, an `enabled` toggle, a read-only `status` (Active/Disabled), and a
   child table of **Firewall Rule** (`protocol` tcp/udp, `port`). Owner-scoped
   (Atlas User `if_owner`, System Manager full), like `VPN Tunnel`.

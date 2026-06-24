@@ -39,7 +39,8 @@
    "in_standard_filter": 1,
    "label": "Virtual Machine",
    "options": "Virtual Machine",
-   "reqd": 1
+   "reqd": 1,
+   "unique": 1
   },
   {
    "description": "The host the VM runs on; the nft rules are applied here. Denormalized from the VM.",
