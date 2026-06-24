@@ -9,11 +9,23 @@ This document describes the Atlas side of that seam. The Central app itself
 lives in a different repository; the only contract Atlas depends on is a small
 set of whitelisted HTTP methods (see *The wire contract* below).
 
+> **The management plane now runs behind a Central-managed tunnel.**
+> [19-tunnel.md](./19-tunnel.md) reverses registration (Central orchestrates it,
+> the operator no longer clicks **Register** on Atlas) and moves all Central→Atlas
+> traffic onto a private WireGuard address (`tunnel_url`), with Atlas firewalling
+> its public interface. The sections below describe the seam's *behavior*
+> (commands, events, catalogs); the *transport and registration* are now as 19
+> specifies. Where the two differ, 19 is authoritative.
+
 ## What Central does for Atlas
 
-1. **Registration.** After setup, an Atlas registers itself on Central —
-   announcing its region, active `provider_type`, and host site — and receives an
-   `atlas_id` that Central uses to address it from then on.
+1. **Registration (now Central-initiated).** The operator feeds Central an Atlas
+   instance's admin key + `base_url` + region, and **Central** orchestrates
+   registration — allocating the `atlas_id`, standing up the tunnel, and pushing a
+   scoped service user back to Atlas ([19-tunnel.md](./19-tunnel.md)). Atlas no
+   longer pushes `register`; it exposes the inbound `provision_tunnel` /
+   `confirm_tunnel` surface Central drives. The `atlas_id` Central assigns is what
+   Atlas stamps on every event so Central can route them to this cluster.
 2. **VM Sizes.** Today each Atlas hardcodes its size catalog
    (`atlas/atlas/sizes.py` `SIZE_PRESETS`). Central becomes the source of truth:
    Atlas **fetches sizes** from Central into a local `Central Size` catalog.
@@ -79,10 +91,14 @@ the fleet state the commands above produce.
 
 - **Central Settings** (single) — the credentials, this Atlas's identity, and
   the action buttons. Mirrors `DigitalOcean Settings`. Fields: `url`,
-  `api_key`, `api_secret` (Password, `set_only_once`), `region`, `enabled`
+  `api_key`, `api_secret` (Password), `region`, `enabled`
   (master switch — event reporting is skipped when off), and the read-only
   `atlas_id` / `registered_on` / `last_sync` / `last_event_status` filled by the
-  action methods.
+  action methods. **Plus a Tunnel section** (`tunnel_ip`, `tunnel_cidr`,
+  `hub_public_key`, `hub_endpoint`, `wg_public_key`, `wg_listen_port`,
+  `tunnel_status`) and the `url` / `api_key` / `api_secret` now hold the **pushed
+  per-Atlas Central service-user** creds — all written by `provision_tunnel`, no
+  longer hand-entered. See [19-tunnel.md § Central Settings](./19-tunnel.md#central-settings--tunnel-section).
 - **Central Size** — a size Central says this Atlas should offer (`slug`,
   `title`, `vcpus`, `cpu_max_cores`, `memory_megabytes`, `disk_gigabytes`,
   `monthly_cost_usd`, `enabled`, `central_metadata`). Distinct from
@@ -98,11 +114,14 @@ Each is a whitelisted controller method returning a plain dict for a toast,
 exactly like `DigitalOceanSettings.test_connection`:
 
 - **Test Connection** — `ping()`; green `OK` / red `Failed`.
-- **Register** — `register()`; POSTs this Atlas's identity, stores the returned
-  `atlas_id`.
 - **Fetch Sizes** — `fetch_sizes()`; upserts `Central Size` rows
   (insert / update / disable-missing, same shape as `provider.upsert_catalog`).
 - **Fetch Images** — `fetch_images()`; upserts `Central Image` rows.
+
+There is **no Register button** anymore: registration is Central-initiated
+([19-tunnel.md](./19-tunnel.md)). The inbound `provision_tunnel` / `confirm_tunnel`
+methods (in `atlas/atlas/api/central_link.py`) are how Central registers this Atlas;
+they are not operator buttons.
 
 ## Event reporting
 
@@ -123,17 +142,24 @@ drained by a minutely `scheduler_events` job for at-least-once delivery.
 
 ## The wire contract
 
-Atlas calls Central's whitelisted methods at
-`<url>/api/method/central.api.atlas.<name>` with
-`Authorization: token <api_key>:<api_secret>`. The methods Atlas expects:
+**Atlas → Central (outbound, unaffected by the firewall).** Atlas calls Central's
+whitelisted methods at `<url>/api/method/central.api.atlas.<name>` with
+`Authorization: token <api_key>:<api_secret>` — where the creds are now the **pushed
+per-Atlas service user** ([19-tunnel.md](./19-tunnel.md)). The methods Atlas expects:
 
 | Atlas call | Central method | Returns |
 | --- | --- | --- |
 | `ping` | `central.api.atlas.ping` | `{ label }` |
-| `register` | `central.api.atlas.register` | `{ atlas_id, label }` |
 | `fetch_sizes` | `central.api.atlas.sizes` | `[ { slug, title, vcpus, cpu_max_cores, memory_megabytes, disk_gigabytes, monthly_cost_usd } ]` |
 | `fetch_images` | `central.api.atlas.images` | `[ { image_name, title, series } ]` |
 | `post_event` | `central.api.atlas.event` | (ignored) |
+
+`register` is gone (registration is Central-initiated). **Central → Atlas
+(inbound)** now travels over the tunnel (`tunnel_url`) authenticated as the **Atlas
+admin** token, and adds the `provision_tunnel` / `confirm_tunnel` / `tunnel_status`
+methods — all specced in [19-tunnel.md](./19-tunnel.md). The command surface (VM
+lifecycle methods, `run_doc_method`) and the reconcile read below are unchanged in
+shape; only their address (now `tunnel_url`) and bootstrap moved.
 
 The route names and payloads are the single external dependency; the whole
 contract is absorbed in `atlas/atlas/central.py` (`CentralClient`), so a change

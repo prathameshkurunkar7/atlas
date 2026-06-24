@@ -136,6 +136,7 @@ keep it the source of truth.
 16. [Central — the global control plane](./16-central.md)
 17. [The TCP proxy](./17-tcp-proxy.md)
 18. [Self-service subdomain routing (bench-admin sites)](./18-bench-self-routing.md)
+19. [The Central-managed tunnel (management-plane lockdown)](./19-tunnel.md)
 
 ## First run on a fresh site
 
