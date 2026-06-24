@@ -80,7 +80,7 @@ def deliver(event_type: str, payload: dict) -> None:
 	if not settings.atlas_id:
 		# Enabled but not yet registered: without an atlas_id Central can't route
 		# the event, so skip rather than POST an unroutable None. Register first.
-		settings.db_set("last_event_status", "skipped: register with Central first", commit=True)
+		settings.db_set("status", "skipped: register with Central first", commit=True)
 		return
 	try:
 		settings.client().post_event(
@@ -91,10 +91,10 @@ def deliver(event_type: str, payload: dict) -> None:
 				"occurred_at": frappe.utils.now(),
 			}
 		)
-		settings.db_set("last_event_status", f"ok: {event_type}", commit=True)
+		settings.db_set("status", f"ok: {event_type}", commit=True)
 	except CentralError as exception:
 		frappe.log_error(f"Central event {event_type} failed: {exception}", "Central event")
-		settings.db_set("last_event_status", f"error: {exception}"[:140], commit=True)
+		settings.db_set("status", f"error: {exception}"[:140], commit=True)
 
 
 # --- payloads --------------------------------------------------------------

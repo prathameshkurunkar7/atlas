@@ -77,14 +77,16 @@ the fleet state the commands above produce.
 
 ## DocTypes
 
-- **Central Settings** (single) — the credentials, this Atlas's identity, and
-  the action buttons. Mirrors `DigitalOcean Settings`. Fields: `url`,
-  `api_key`, `api_secret` (Password, `set_only_once`), `enabled`
-  (master switch — event reporting is skipped when off), and the read-only
-  `atlas_id` / `registered_on` / `last_sync` / `last_event_status` filled by the
-  action methods. The region announced at **Register** is **not** a Central
-  Settings field — it is read from `Atlas Settings.region` (the single source of
-  truth, via `placement.atlas_region()`).
+- **Central Settings** (single) — the credentials and the action buttons.
+  Mirrors `DigitalOcean Settings`. Fields: `url`, `api_key`, `api_secret`
+  (Password, `set_only_once`), `enabled` (master switch — event reporting is
+  skipped when off), the read-only `atlas_id` filled by **Register**, and a
+  read-only `status` breadcrumb (the last register / event-delivery outcome).
+  `status` is a glance-only convenience; the event *history* belongs to the
+  planned `Central Event` log (below), not the Single. The region announced at
+  **Register** is **not** a Central Settings field — it is read from
+  `Atlas Settings.region` (the single source of truth, via
+  `placement.atlas_region()`).
 - **Central Size** — a size Central says this Atlas should offer (`slug`,
   `title`, `vcpus`, `cpu_max_cores`, `memory_megabytes`, `disk_gigabytes`,
   `monthly_cost_usd`, `enabled`, `central_metadata`). Distinct from
@@ -113,7 +115,7 @@ Reporting is wired with `doc_events` in `hooks.py` (no controller edits) →
 `Virtual Machine Snapshot`, or `Server`, and a VM `after_insert`, enqueue a
 background `deliver` job (`enqueue_after_commit=True`, so a rolled-back
 transaction is never reported). The job POSTs to Central and records the outcome
-in `Central Settings.last_event_status`. Everything is gated on
+in `Central Settings.status`. Everything is gated on
 `Central Settings.enabled`, so a site without Central configured pays nothing,
 and a delivery failure is logged to the Error Log — it never blocks a VM
 operation.

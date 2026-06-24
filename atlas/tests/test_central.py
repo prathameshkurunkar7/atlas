@@ -212,5 +212,5 @@ class TestCentralReport(IntegrationTestCase):
 			central_report.deliver("vm.created", {"name": "vm-1"})
 		settings.db_set.assert_called()
 		recorded = settings.db_set.call_args[0]
-		self.assertEqual(recorded[0], "last_event_status")
+		self.assertEqual(recorded[0], "status")
 		self.assertIn("error", recorded[1])

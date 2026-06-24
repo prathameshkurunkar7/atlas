@@ -23,9 +23,7 @@ class CentralSettings(Document):
 		api_secret: DF.Password
 		atlas_id: DF.Data | None
 		enabled: DF.Check
-		last_event_status: DF.SmallText | None
-		last_sync: DF.Datetime | None
-		registered_on: DF.Datetime | None
+		status: DF.SmallText | None
 		url: DF.Data
 	# end: auto-generated types
 
@@ -46,23 +44,19 @@ class CentralSettings(Document):
 		every event so Central can route them back to this cluster."""
 		registration = self.client().register(self._identity())
 		self.atlas_id = registration.atlas_id
-		self.registered_on = frappe.utils.now_datetime()
+		self.status = f"registered as {registration.atlas_id}"
 		self.save()
 		return {"ok": True, "atlas_id": registration.atlas_id, "label": registration.label}
 
 	@frappe.whitelist()
 	def fetch_sizes(self) -> dict:
 		"""Pull Central's VM size catalog into Central Size rows."""
-		summary = upsert_central_sizes(self.client().fetch_sizes())
-		self.db_set("last_sync", frappe.utils.now_datetime())
-		return summary
+		return upsert_central_sizes(self.client().fetch_sizes())
 
 	@frappe.whitelist()
 	def fetch_images(self) -> dict:
 		"""Pull Central's expected bench images into Central Image rows."""
-		summary = upsert_central_images(self.client().fetch_images())
-		self.db_set("last_sync", frappe.utils.now_datetime())
-		return summary
+		return upsert_central_images(self.client().fetch_images())
 
 	def client(self) -> CentralClient:
 		if not self.url or not self.api_key:

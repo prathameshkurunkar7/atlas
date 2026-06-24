@@ -12,10 +12,8 @@
   "enabled",
   "section_break_registration",
   "atlas_id",
-  "registered_on",
   "column_break_registration",
-  "last_sync",
-  "last_event_status"
+  "status"
  ],
  "fields": [
   {
@@ -71,27 +69,14 @@
    "read_only": 1
   },
   {
-   "fieldname": "registered_on",
-   "fieldtype": "Datetime",
-   "label": "Registered On",
-   "read_only": 1
-  },
-  {
    "fieldname": "column_break_registration",
    "fieldtype": "Column Break"
   },
   {
-   "description": "Last successful Fetch Sizes / Fetch Images.",
-   "fieldname": "last_sync",
-   "fieldtype": "Datetime",
-   "label": "Last Sync",
-   "read_only": 1
-  },
-  {
-   "description": "Outcome of the most recent event delivery.",
-   "fieldname": "last_event_status",
+   "description": "Last registration / event-delivery outcome. A breadcrumb only — the Central Event Log holds the history.",
+   "fieldname": "status",
    "fieldtype": "Small Text",
-   "label": "Last Event Status",
+   "label": "Status",
    "read_only": 1
   }
  ],

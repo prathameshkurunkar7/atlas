@@ -45,6 +45,6 @@ function run(frm, method, ok_message) {
 			message: error ? __("Failed: {0}", [error]) : text,
 			indicator: error ? "red" : "green",
 		});
-		frm.reload_doc(); // pick up atlas_id / last_sync written server-side
+		frm.reload_doc(); // pick up atlas_id / status written server-side
 	});
 }
