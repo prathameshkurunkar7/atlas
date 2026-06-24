@@ -119,12 +119,12 @@ def ensure_scaleway_provider() -> str:
 	image_name = f"Scaleway/{config['image']}"
 	if not frappe.db.exists("Provider Size", size_name):
 		raise AssertionError(
-			f"Provider Size {size_name!r} not found after discover — check atlas_scw_size "
+			f"Provider Size {size_name!r} not found after discover — check scaleway.size "
 			f"against the live catalog (name casing matters, e.g. EM-A610R-NVME)."
 		)
 	if not frappe.db.exists("Provider Image", image_name):
 		raise AssertionError(
-			f"Provider Image {image_name!r} not found after discover — check atlas_scw_image."
+			f"Provider Image {image_name!r} not found after discover — check scaleway.image."
 		)
 	frappe.db.set_single_value("Scaleway Settings", "default_size", size_name, update_modified=False)
 	frappe.db.set_single_value("Scaleway Settings", "default_image", image_name, update_modified=False)

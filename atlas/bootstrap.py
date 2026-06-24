@@ -322,71 +322,30 @@ def run_self_serve(force_bake: bool = False) -> None:
 
 
 def restore_credentials() -> None:
-	"""Re-write the credential fields the unit suite clobbers, from site config.
+	"""Re-seed the Singles the unit suite clobbers, from the explicit E2E fixture.
 
 	The shared dev DB is also the test DB: a unit run leaves fake values in the
 	Singles (`set_atlas_settings`/`set_digitalocean_settings` write `dop_v1_fake`,
 	`atlas-test-ssh-key.pem`, `key-id-123`), so the next *real* provision/build/e2e
 	fails with a bogus token or an unusable key (memory: real-provision-traps #4).
-	This restores the real values from `common_site_config.json` —
-	`atlas_ssh_private_key_path`, optional `atlas_ssh_key_id` / `atlas_ssh_public_key`,
-	and the active provider's secret — without `ensure_provider`'s catalog
-	discover() network call. Which provider secret is restored is driven by
-	`atlas_provider_type` (DigitalOcean → `atlas_do_token`; Scaleway →
-	`atlas_scw_secret_key`; Self-Managed → none). Run it before any host turn:
+
+	This re-applies the explicit E2E config object through the Layer-1 setters —
+	the same contract `setup.run` drives — by delegating to `ensure_e2e_provider`
+	(`setup.run(setup_config())`). It reads the E2E fixture, NOT `frappe.conf`. The
+	DO setter restores the api_token, ssh_key_id, region and the named catalog Links;
+	its discover() is best-effort, so this stays robust offline. Run before any host
+	turn that follows a unit run:
 
 	    bench --site <site> execute atlas.bootstrap.restore_credentials
 
-	Idempotent; safe to re-run. Fails loud (`require_config`) if a required key is
-	missing, since a half-restored credential set is worse than a clean error."""
-	provider_type = require_config("atlas_provider_type")
-	# Store the EXPANDED absolute path. Config often holds `~/.ssh/id_rsa`; the
-	# production reader (get_ssh_key_from_disk) expanduser()s it, but a stored raw
-	# `~` is a trap for any path that reads the field literally and a confusing
-	# "invalid format / file not found" if the tilde survives — expand once here so
-	# the Single always holds a real absolute path that points at an existing key.
-	key_path = os.path.expanduser(require_config("atlas_ssh_private_key_path"))
-	if not os.path.isfile(key_path):
-		frappe.throw(f"atlas_ssh_private_key_path expands to {key_path!r}, which is not a file")
-	frappe.db.set_single_value(
-		"Atlas Settings",
-		"ssh_private_key_path",
-		key_path,
-		update_modified=False,
-	)
-	# ssh_key_id is the vendor's own key handle, so it lives on the active vendor's
-	# Settings, not Atlas Settings. Required for DO (its key handle), optional for
-	# Scaleway (the provider self-registers the public key with IAM if unset) and
-	# absent for Self-Managed — require it only for DO, restore best-effort otherwise.
-	if provider_type == "DigitalOcean":
-		ssh_key_id = require_config("atlas_ssh_key_id")
-	else:
-		ssh_key_id = frappe.conf.get("atlas_ssh_key_id")
-	vendor_single = {"DigitalOcean": "DigitalOcean Settings", "Scaleway": "Scaleway Settings"}.get(
-		provider_type
-	)
-	if ssh_key_id and vendor_single:
-		frappe.db.set_single_value(vendor_single, "ssh_key_id", ssh_key_id, update_modified=False)
-	public_key = _resolve_fleet_public_key()
-	if public_key:
-		frappe.db.set_single_value("Atlas Settings", "ssh_public_key", public_key, update_modified=False)
-	if provider_type == "DigitalOcean":
-		frappe.utils.password.set_encrypted_password(
-			"DigitalOcean Settings",
-			"DigitalOcean Settings",
-			require_config("atlas_do_token"),
-			"api_token",
-		)
-	elif provider_type == "Scaleway":
-		frappe.utils.password.set_encrypted_password(
-			"Scaleway Settings",
-			"Scaleway Settings",
-			require_config("atlas_scw_secret_key"),
-			"secret_key",
-		)
-	# nosemgrep: frappe-manual-commit -- bootstrap script: persist restored credentials so later bootstrap steps and enqueued jobs can read them
-	frappe.db.commit()
-	print(f"[bootstrap] restored Atlas/{provider_type} credentials from site config")
+	Idempotent; safe to re-run. Fails loud (`MissingConfig`) if the fixture is absent
+	or missing a required key, since a half-restored credential set is worse than a
+	clean error. The Scaleway e2e has its own seed (`ensure_scaleway_provider`); this
+	restores the DigitalOcean harness's Singles."""
+	from atlas.tests.e2e._droplets import ensure_e2e_provider
+
+	provider_type = ensure_e2e_provider()
+	print(f"[bootstrap] restored Atlas/{provider_type} credentials from the E2E fixture")
 
 
 def ensure_provider() -> str:
