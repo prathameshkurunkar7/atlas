@@ -794,7 +794,6 @@ def ensure_tls_layer(config: dict) -> None:
 	frappe.db.set_single_value(
 		"Lets Encrypt Settings", "account_email", config["account_email"], update_modified=False
 	)
-	frappe.db.set_single_value("Lets Encrypt Settings", "agree_tos", 1, update_modified=False)
 
 	# The active DNS / TLS vendor types now live on the Settings singles; Root Domain
 	# denormalizes them at insert (its before_insert reads them).

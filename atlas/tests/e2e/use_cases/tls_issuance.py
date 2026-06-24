@@ -201,7 +201,6 @@ def _seed_tls_doctypes(config: dict) -> None:
 	frappe.db.set_single_value(
 		"Lets Encrypt Settings", "account_email", config["account_email"], update_modified=False
 	)
-	frappe.db.set_single_value("Lets Encrypt Settings", "agree_tos", 1, update_modified=False)
 
 	frappe.get_doc(
 		{
