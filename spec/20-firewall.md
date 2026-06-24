@@ -64,6 +64,18 @@ is evaluated **first**. Three properties make this exactly right:
   the first rule lets it through. This is the one real behavioral addition — it
   turns conntrack on for the forward hook.
 
+Because the chain is stateful, applying a deny blocks **new** connections but does
+not tear down flows already in the conntrack table — an open SSH session survives
+the rule that forbids *new* SSH, since its packets still match `established,related`
+(a new SYN is state `NEW`, hits the `drop`). This is deliberate, and it is what
+every stateful cloud firewall does (AWS security groups, GCP and Azure firewall
+rules, DigitalOcean Cloud Firewalls); only a *stateless* filter — AWS Network ACLs —
+re-evaluates every packet and would cut the live flow. Atlas keeps the stateful
+behavior so tightening a VM's rules never drops the operator's own live session.
+Forcibly severing an already-open flow is a host-side conntrack eviction
+(`conntrack -D --orig-dst <vm-v6> …`), not a firewall verb — intentionally not part
+of apply.
+
 Every rule is `daddr`-scoped to one VM, so per-VM blocks are independent and their
 order relative to each other does not matter. `apply_firewall` is idempotent: it
 deletes this VM's block by handle and re-appends it (established, then one accept
