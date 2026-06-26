@@ -9,10 +9,15 @@
 //
 // The imperative bits (in each slide's `onload`) deliver the "discover, don't
 // type" experience: a Test Connection button calls `atlas.setup.wizard_discover`
-// with the just-typed (unsaved) credentials and turns the Size / Image / SSH Key /
-// Project slug boxes into pick-lists populated from the vendor's live catalog. The
-// default provider is applied on load so its section shows immediately (no blank
-// first paint), and the SSH-key slide validates the path before Next.
+// with the just-typed (unsaved) credentials and turns the SSH Key / Project slug
+// boxes into pick-lists populated from the vendor's live catalog. The default
+// provider is applied on load so its section shows immediately (no blank first
+// paint), and the SSH-key slide validates the path before Next.
+//
+// The default size/image are NOT asked here — `setup()` adopts the provider's
+// discover() default into the empty catalog slot (operator's `atlas_*_default_*`
+// config keys override it), and the operator can flip the default on the Provider
+// Size / Provider Image list anytime.
 
 frappe.provide("frappe.setup");
 
@@ -23,8 +28,8 @@ frappe.setup.on("before_load", function () {
 // Fields the wizard discovers rather than asks you to type. Start as empty Selects
 // (so they render as dropdowns, not text); Test Connection fills the options.
 const ATLAS_DISCOVERED = {
-	DigitalOcean: ["do_default_size", "do_default_image", "do_ssh_key_id"],
-	Scaleway: ["scw_default_size", "scw_default_image", "scw_project_id", "scw_ssh_key_id"],
+	DigitalOcean: ["do_ssh_key_id"],
+	Scaleway: ["scw_project_id", "scw_ssh_key_id"],
 };
 
 function atlas_setup_slides() {
@@ -97,30 +102,6 @@ function atlas_setup_slides() {
 						"Pick after Test Connection, or leave blank — Atlas will find or upload the SSH public key automatically."
 					),
 				},
-				{
-					fieldname: "do_default_size",
-					label: __("Default Size"),
-					fieldtype: "Select",
-					options: "s-2vcpu-4gb",
-					default: "s-2vcpu-4gb",
-					depends_on: "eval:doc.provider_type=='DigitalOcean'",
-					mandatory_depends_on: "eval:doc.provider_type=='DigitalOcean'",
-					description: __(
-						"Required. Prefilled with a sensible default; Test Connection lets you pick another, or type a vendor slug, e.g. s-2vcpu-4gb."
-					),
-				},
-				{
-					fieldname: "do_default_image",
-					label: __("Default Image"),
-					fieldtype: "Select",
-					options: "ubuntu-24-04-x64",
-					default: "ubuntu-24-04-x64",
-					depends_on: "eval:doc.provider_type=='DigitalOcean'",
-					mandatory_depends_on: "eval:doc.provider_type=='DigitalOcean'",
-					description: __(
-						"Required. Prefilled with a sensible default; Test Connection lets you pick another, or type a vendor slug, e.g. ubuntu-24-04-x64."
-					),
-				},
 
 				// --- Scaleway ---
 				{
@@ -164,26 +145,6 @@ function atlas_setup_slides() {
 					mandatory_depends_on: "eval:doc.provider_type=='Scaleway'",
 					description: __(
 						"Pick after Test Connection (the catalog needs it to list SSH keys)."
-					),
-				},
-				{
-					fieldname: "scw_default_size",
-					label: __("Default Size"),
-					fieldtype: "Select",
-					depends_on: "eval:doc.provider_type=='Scaleway'",
-					mandatory_depends_on: "eval:doc.provider_type=='Scaleway'",
-					description: __(
-						"Pick after Test Connection, or type a case-sensitive offer name, e.g. EM-A610R-NVME."
-					),
-				},
-				{
-					fieldname: "scw_default_image",
-					label: __("Default Image"),
-					fieldtype: "Select",
-					depends_on: "eval:doc.provider_type=='Scaleway'",
-					mandatory_depends_on: "eval:doc.provider_type=='Scaleway'",
-					description: __(
-						"Pick after Test Connection, or type a case-sensitive OS slug, e.g. Ubuntu_24.04."
 					),
 				},
 				{ fieldtype: "Column Break", depends_on: "eval:doc.provider_type=='Scaleway'" },
@@ -338,7 +299,7 @@ function atlas_provider_slide_onload(slide) {
 	// the first/declared option visually but leaves the doc value empty, so a field a
 	// user never touches would post blank and fail its `mandatory_depends_on` — make
 	// "what you see selected" == "what gets posted".
-	["provider_type", "do_region", "do_default_size", "do_default_image"].forEach((fieldname) => {
+	["provider_type", "do_region"].forEach((fieldname) => {
 		const field = slide.get_field(fieldname);
 		if (field?.df.default && !slide.get_value(fieldname)) field.set_input(field.df.default);
 	});
@@ -411,13 +372,9 @@ function atlas_apply_catalog(slide, provider_type, catalog) {
 	const map =
 		provider_type === "DigitalOcean"
 			? {
-					do_default_size: catalog.sizes,
-					do_default_image: catalog.images,
 					do_ssh_key_id: catalog.ssh_keys,
 			  }
 			: {
-					scw_default_size: catalog.sizes,
-					scw_default_image: catalog.images,
 					scw_project_id: catalog.projects,
 					scw_ssh_key_id: catalog.ssh_keys,
 			  };

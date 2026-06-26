@@ -95,16 +95,19 @@ function run_refresh_catalog(frm) {
 
 function open_provision_dialog(frm) {
 	const is_self_managed = frm.doc.provider_type === "Self-Managed";
-	const settings_doctype = `${frm.doc.provider_type} Settings`;
-	// The Fake provider (developer_mode) has no Settings Single; default to no
-	// settings so the dialog still renders. DO/Scaleway/Self-Managed always have one.
-	const settings_promise = frappe.db.exists("DocType", settings_doctype)
-		? frappe.db.get_doc(settings_doctype)
-		: Promise.resolve(null);
-	settings_promise.then((settings) => {
+	// Prefill the Size / Image picks from the Provider Size / Provider Image rows
+	// marked `is_default` for this provider_type (the same default provision_server
+	// falls back to). Self-Managed and Fake have no catalog default — resolve to null.
+	const defaults_promise = is_self_managed
+		? Promise.resolve([null, null])
+		: Promise.all([
+				default_catalog_row("Provider Size", frm.doc.provider_type),
+				default_catalog_row("Provider Image", frm.doc.provider_type),
+		  ]);
+	defaults_promise.then(([default_size, default_image]) => {
 		const dialog = new frappe.ui.Dialog({
 			title: __("Provision Server"),
-			fields: build_provision_fields(frm, settings, is_self_managed),
+			fields: build_provision_fields(frm, { default_size, default_image }, is_self_managed),
 			primary_action_label: __("Provision"),
 			primary_action(values) {
 				if (!validate_server_title(dialog, values.title)) return;
@@ -116,7 +119,14 @@ function open_provision_dialog(frm) {
 	});
 }
 
-function build_provision_fields(frm, settings, is_self_managed) {
+// The `name` of the default catalog row (e.g. "DigitalOcean/s-2vcpu-4gb"), or null.
+function default_catalog_row(doctype, provider_type) {
+	return frappe.db
+		.get_value(doctype, { provider_type, is_default: 1, enabled: 1 }, "name")
+		.then(({ message }) => message?.name || null);
+}
+
+function build_provision_fields(frm, defaults, is_self_managed) {
 	const fields = [
 		{
 			fieldname: "title",
@@ -165,7 +175,7 @@ function build_provision_fields(frm, settings, is_self_managed) {
 				label: __("Size"),
 				fieldtype: "Link",
 				options: "Provider Size",
-				default: settings ? settings.default_size : null,
+				default: defaults.default_size,
 				reqd: 1,
 				get_query: () => ({ filters: link_filters }),
 			},
@@ -174,7 +184,7 @@ function build_provision_fields(frm, settings, is_self_managed) {
 				label: __("Image"),
 				fieldtype: "Link",
 				options: "Provider Image",
-				default: settings ? settings.default_image : null,
+				default: defaults.default_image,
 				reqd: 1,
 				get_query: () => ({ filters: link_filters }),
 			}

@@ -30,16 +30,16 @@ step, then layers the provisioning on top.
             "digitalocean": {
                 "api_token": "dop_v1_…",
                 "region": "blr1",  # DO's OWN API region (not Atlas Settings.region)
-                "default_size": "s-2vcpu-4gb-intel",
-                "default_image": "ubuntu-24-04-x64",
+                "default_size": "s-2vcpu-4gb-intel",  # optional; else discover() hint
+                "default_image": "ubuntu-24-04-x64",  # optional; else discover() hint
                 "ssh_key_id": "12345678",
             },
             "scaleway": {
                 "secret_key": "…",
                 "project_id": "…",
                 "zone": "fr-par-2",  # Scaleway's OWN zone
-                "default_size": "EM-A610R-NVME",
-                "default_image": "Ubuntu_24.04",
+                "default_size": "EM-A610R-NVME",  # optional; else discover() hint
+                "default_image": "Ubuntu_24.04",  # optional; else discover() hint
                 "organization_id": "…",  # optional
                 "billing": "hourly",  # optional
                 "ssh_key_id": "…",  # optional
@@ -96,8 +96,8 @@ def run(config: dict) -> dict:
 		frappe.get_single("DigitalOcean Settings").setup(
 			api_token=do["api_token"],
 			region=do["region"],
-			default_size=do["default_size"],
-			default_image=do["default_image"],
+			default_size=do.get("default_size"),
+			default_image=do.get("default_image"),
 			ssh_key_id=do.get("ssh_key_id") or None,
 		)
 	elif provider_type == "Scaleway":
@@ -106,8 +106,8 @@ def run(config: dict) -> dict:
 			secret_key=scw["secret_key"],
 			project_id=scw["project_id"],
 			zone=scw["zone"],
-			default_size=scw["default_size"],
-			default_image=scw["default_image"],
+			default_size=scw.get("default_size"),
+			default_image=scw.get("default_image"),
 			organization_id=scw.get("organization_id"),
 			billing=scw.get("billing", "hourly"),
 			ssh_key_id=scw.get("ssh_key_id"),
@@ -212,8 +212,9 @@ def from_site_config() -> dict:
 		provider["digitalocean"] = {
 			"api_token": require_config("atlas_do_token"),
 			"region": require_config("atlas_do_region"),
-			"default_size": require_config("atlas_do_default_size"),
-			"default_image": require_config("atlas_do_default_image"),
+			# Optional: omit to take the provider's discover() default hint.
+			"default_size": frappe.conf.get("atlas_do_default_size"),
+			"default_image": frappe.conf.get("atlas_do_default_image"),
 			"ssh_key_id": frappe.conf.get("atlas_ssh_key_id"),
 		}
 	elif provider_type == "Scaleway":
@@ -221,8 +222,9 @@ def from_site_config() -> dict:
 			"secret_key": require_config("atlas_scw_secret_key"),
 			"project_id": require_config("atlas_scw_project_id"),
 			"zone": require_config("atlas_scw_zone"),
-			"default_size": require_config("atlas_scw_default_size"),
-			"default_image": require_config("atlas_scw_default_image"),
+			# Optional: omit to take the provider's discover() default hint.
+			"default_size": frappe.conf.get("atlas_scw_default_size"),
+			"default_image": frappe.conf.get("atlas_scw_default_image"),
 			"organization_id": frappe.conf.get("atlas_scw_organization_id"),
 			"billing": frappe.conf.get("atlas_scw_billing") or "hourly",
 			"ssh_key_id": frappe.conf.get("atlas_ssh_key_id"),
@@ -291,8 +293,6 @@ def _stage_provider(args: dict) -> None:
 		frappe.get_single("DigitalOcean Settings").setup(
 			api_token=args.get("do_api_token"),
 			region=args.get("do_region"),
-			default_size=args.get("do_default_size"),
-			default_image=args.get("do_default_image"),
 			ssh_key_id=args.get("do_ssh_key_id") or None,
 		)
 	elif provider_type == "Scaleway":
@@ -300,8 +300,6 @@ def _stage_provider(args: dict) -> None:
 			secret_key=args.get("scw_secret_key"),
 			project_id=args.get("scw_project_id"),
 			zone=args.get("scw_zone"),
-			default_size=args.get("scw_default_size"),
-			default_image=args.get("scw_default_image"),
 			organization_id=args.get("scw_organization_id") or None,
 			billing=args.get("scw_billing") or "hourly",
 			ssh_key_id=args.get("scw_ssh_key_id") or None,

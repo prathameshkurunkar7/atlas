@@ -152,8 +152,11 @@ Layer-1 `setup()` setters:
   credentials, and the optional TLS block, then `setup.get_setup_stages`
   applies them (`atlas/public/js/setup_wizard.js` + the `setup_wizard_*` hooks).
   A **Test Connection** button (`setup.wizard_discover`) probes the vendor with
-  the just-typed credentials and turns the slug boxes into pick-lists before
-  anything is saved.
+  the just-typed credentials and turns the SSH-key / project boxes into pick-lists
+  before anything is saved. The default size/image are **not** asked: `setup()`
+  adopts the provider's `discover()` default into the catalog (the
+  `atlas_*_default_*` config keys override it), and the operator can flip the
+  `is_default` `Provider Size` / `Provider Image` row anytime.
 - `setup.run(config)` — the scripted path: a plain `{provider, tls?}` dict, one
   JSON document per environment. CI / E2E / fast-deploy call this.
 - `setup.from_site_config()` — the **back-compat adapter** that reads the legacy

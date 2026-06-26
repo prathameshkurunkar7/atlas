@@ -31,14 +31,18 @@ from atlas.atlas.secrets import get_secret
 _KEY_PATH = os.path.join(tempfile.gettempdir(), "atlas-setup-test-key.pem")
 
 DO_CAPS = Capabilities(
-	sizes=(SizeInfo(slug="s-2vcpu-4gb-intel", monthly_cost_usd=24, provider_metadata={}),),
-	images=(ImageInfo(slug="ubuntu-24-04-x64", provider_metadata={}),),
+	sizes=(SizeInfo(slug="s-2vcpu-4gb-intel", monthly_cost_usd=24, provider_metadata={}, is_default=True),),
+	images=(ImageInfo(slug="ubuntu-24-04-x64", provider_metadata={}, is_default=True),),
 )
 SCW_SIZE = "EM-A610R-NVME"
 SCW_IMAGE = "Ubuntu_24.04"
 SCW_CAPS = Capabilities(
-	sizes=(SizeInfo(slug=SCW_SIZE, monthly_cost_usd=40, provider_metadata={"offer_id": "offer-uuid"}),),
-	images=(ImageInfo(slug=SCW_IMAGE, provider_metadata={"os_id": "os-uuid"}),),
+	sizes=(
+		SizeInfo(
+			slug=SCW_SIZE, monthly_cost_usd=40, provider_metadata={"offer_id": "offer-uuid"}, is_default=True
+		),
+	),
+	images=(ImageInfo(slug=SCW_IMAGE, provider_metadata={"os_id": "os-uuid"}, is_default=True),),
 )
 
 
@@ -143,8 +147,9 @@ class TestSetupContract(IntegrationTestCase):
 			frappe.db.get_single_value("Atlas Settings", "ssh_public_key"), "ssh-ed25519 AAAA test"
 		)
 		self.assertEqual(frappe.db.get_single_value("DigitalOcean Settings", "ssh_key_id"), "key-id-123")
+		# The explicit config slug is marked the lone default on the catalog row.
 		self.assertEqual(
-			frappe.db.get_single_value("DigitalOcean Settings", "default_size"),
+			frappe.db.get_value("Provider Size", {"provider_type": "DigitalOcean", "is_default": 1}, "name"),
 			"DigitalOcean/s-2vcpu-4gb-intel",
 		)
 		self.assertEqual(
@@ -159,7 +164,8 @@ class TestSetupContract(IntegrationTestCase):
 		self.assertEqual(frappe.db.get_single_value("Scaleway Settings", "billing"), "monthly")
 		self.assertEqual(get_secret("Scaleway Settings", "Scaleway Settings", "secret_key"), "scw-secret")
 		self.assertEqual(
-			frappe.db.get_single_value("Scaleway Settings", "default_size"), f"Scaleway/{SCW_SIZE}"
+			frappe.db.get_value("Provider Size", {"provider_type": "Scaleway", "is_default": 1}, "name"),
+			f"Scaleway/{SCW_SIZE}",
 		)
 		self.assertTrue(frappe.db.exists("Provider Image", f"Scaleway/{SCW_IMAGE}"))
 
@@ -271,8 +277,8 @@ class TestWizardStages(IntegrationTestCase):
 			"ssh_public_key": "ssh-ed25519 AAAA wiz",
 			"do_api_token": "dop_v1_wiz",
 			"do_region": "ams3",
-			"do_default_size": "s-2vcpu-4gb-intel",
-			"do_default_image": "ubuntu-24-04-x64",
+			# The wizard no longer collects size/image — the default comes from the
+			# provider's discover() hint, applied by upsert_catalog into the empty slot.
 			"do_ssh_key_id": "wiz-key",
 		}
 		args.update(over)
@@ -296,6 +302,11 @@ class TestWizardStages(IntegrationTestCase):
 		self.assertEqual(frappe.db.get_single_value("Atlas Settings", "region"), "blr1")
 		self.assertEqual(frappe.db.get_single_value("DigitalOcean Settings", "region"), "ams3")
 		self.assertEqual(frappe.db.get_single_value("DigitalOcean Settings", "ssh_key_id"), "wiz-key")
+		# No config slug: the discover() hint became the default.
+		self.assertEqual(
+			frappe.db.get_value("Provider Size", {"provider_type": "DigitalOcean", "is_default": 1}, "name"),
+			"DigitalOcean/s-2vcpu-4gb-intel",
+		)
 
 	def test_truthy_normalizes_wizard_checkbox(self) -> None:
 		self.assertTrue(setup._truthy("1"))
@@ -410,13 +421,9 @@ _TOUCHED_SINGLES = (
 	("Atlas Settings", "tls_provider_type"),
 	("DigitalOcean Settings", "region"),
 	("DigitalOcean Settings", "ssh_key_id"),
-	("DigitalOcean Settings", "default_size"),
-	("DigitalOcean Settings", "default_image"),
 	("Scaleway Settings", "zone"),
 	("Scaleway Settings", "project_id"),
 	("Scaleway Settings", "billing"),
-	("Scaleway Settings", "default_size"),
-	("Scaleway Settings", "default_image"),
 	("Route53 Settings", "access_key_id"),
 	("Route53 Settings", "region"),
 	("Lets Encrypt Settings", "account_email"),
