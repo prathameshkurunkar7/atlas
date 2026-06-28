@@ -59,6 +59,7 @@ jspm_packages/
 .coverage*
 .coveragerc
 coverage*.xml
+htmlcov/
 plan/layouts.md
 
 ### Playwright
