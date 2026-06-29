@@ -33,7 +33,7 @@ def main() -> None:
 	paths = VirtualMachinePaths(inputs.virtual_machine_name)
 
 	# Tolerate failure: the unit may already be gone or never have started.
-	run("sudo", "systemctl", "disable", "--now", paths.systemd_unit, check=False)
+	run("sudo systemctl disable --now {}", paths.systemd_unit, check=False)
 
 	# In case the unit failed before its ExecStopPost ran, tear down networking
 	# explicitly. vm-network-down.py is the durable hook (positional uuid, imports
@@ -41,16 +41,15 @@ def main() -> None:
 	# the same hook the unit's ExecStopPost runs rather than reimplement it. It is
 	# a .py now (the shell port); calling the old .sh path made `sudo` report
 	# "command not found" and, under check=False, silently skipped teardown.
-	if run_ok("sudo", "test", "-f", paths.network_env):
+	if run_ok("sudo test -f {}", paths.network_env):
 		# Invoke the hook under the Atlas venv python — the same interpreter the
 		# unit's ExecStopPost uses — not the host's python3, so the hook runs on the
 		# same CPython 3.14 everywhere. terminate-vm.py itself runs under the venv
 		# python (the runner uses it + fail-loud guards its presence), so
 		# ATLAS_PYTHON is guaranteed to exist here.
 		run(
-			"sudo",
+			"sudo {} /var/lib/atlas/bin/vm-network-down.py {}",
 			ATLAS_PYTHON,
-			"/var/lib/atlas/bin/vm-network-down.py",
 			inputs.virtual_machine_name,
 			check=False,
 		)
@@ -59,7 +58,7 @@ def main() -> None:
 	# socket, and the rootfs.ext4 block NODE) with it — they all live under jail/
 	# inside this directory. The node is just a pointer; the LV it points at is a
 	# separate object removed next.
-	run("sudo", "rm", "-rf", paths.directory)
+	run("sudo rm -rf {}", paths.directory)
 
 	# Remove the VM's disk LV. LogicalVolume.remove is idempotent (no-op if gone)
 	# and guarded: it refuses to remove the thin pool or a base image LV, so a bug

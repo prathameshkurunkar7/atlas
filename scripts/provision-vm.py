@@ -205,8 +205,8 @@ def main() -> None:
 	# stale RAM with it. Drop it so the next start cold-boots. For a warm clone,
 	# a still-present marker proves the staged pair was never consumed (the
 	# guest never ran), so re-staging below is safe on an idempotent re-run.
-	marker_was_pending = run_ok("sudo", "test", "-f", paths.memory_snapshot_marker)
-	run("sudo", "rm", "-rf", paths.memory_snapshot_directory)
+	marker_was_pending = run_ok("sudo test -f {}", paths.memory_snapshot_marker)
+	run("sudo rm -rf {}", paths.memory_snapshot_directory)
 
 	# 1. Per-VM disk LV. An instant CoW thin snapshot of an origin LV — the
 	#    pristine image's base LV normally, or a snapshot LV when cloning
@@ -279,7 +279,7 @@ def main() -> None:
 	# 3. Kernel inside the jail. Hard-link (not copy) the immutable image kernel
 	#    so we don't duplicate it per VM; same filesystem (/var/lib/atlas), so
 	#    the link always succeeds. Read-only is fine for the jailed process.
-	run("sudo", "ln", "-f", f"{image}/{inputs.kernel_filename}", paths.kernel)
+	run("sudo ln -f {} {}", f"{image}/{inputs.kernel_filename}", paths.kernel)
 
 	# 4. Firecracker config inside the jail, with jail-RELATIVE paths — they are
 	#    resolved by the jailed process after chroot, so they are relative to the
@@ -316,7 +316,7 @@ def main() -> None:
 	#    chown re-touches the rootfs.ext4 block node's inode (already uid-owned
 	#    from step 4b) — correct and harmless; it chowns the node, not the LV it
 	#    points at. Do this last, after every file is in place.
-	run("sudo", "chown", "-R", f"{uid}:{uid}", paths.jail_chroot_base)
+	run("sudo chown -R {} {}", f"{uid}:{uid}", paths.jail_chroot_base)
 
 	# 5b. Warm clone: stage the golden memory pair behind a READY marker, AFTER
 	#     the recursive chown — the pair is HARD-LINKED from the durable artifact
@@ -360,8 +360,8 @@ def main() -> None:
 	#    anyway (VirtualMachine.provision), so nothing downstream needs the unit
 	#    active by the time this Task returns. A failing ExecStartPre now surfaces
 	#    async via the unit's own state (Restart=always); it is not lost.
-	run("sudo", "systemctl", "enable", paths.systemd_unit)
-	run("sudo", "systemctl", "start", "--no-block", paths.systemd_unit)
+	run("sudo systemctl enable {}", paths.systemd_unit)
+	run("sudo systemctl start --no-block {}", paths.systemd_unit)
 
 	print(f"Provisioned {inputs.virtual_machine_name}.")
 
@@ -375,7 +375,7 @@ def _guard_uid_collision(uid: int, own_rootfs_node: str) -> None:
 	for other_jail in glob.glob(pattern):
 		if other_jail == own_rootfs_node:  # our own (idempotent re-run)
 			continue
-		owner = run("sudo", "stat", "-c", "%u", other_jail).strip()
+		owner = run("sudo stat -c %u {}", other_jail).strip()
 		if owner == str(uid):
 			sys.exit(f"uid {uid} already owned by {other_jail}; uid collision — terminate that VM or re-roll")
 
@@ -435,14 +435,14 @@ def _mmds_metadata(inputs: "ProvisionInputs") -> str:
 def _stage_warm_pair(warm_snapshot_directory: str, paths: VirtualMachinePaths, uid: int) -> None:
 	"""Hard-link the durable golden pair into the clone jail and arm the marker."""
 	install_directory(paths.memory_snapshot_directory, mode="0700")
-	run("sudo", "chown", f"{uid}:{uid}", paths.memory_snapshot_directory)
+	run("sudo chown {} {}", f"{uid}:{uid}", paths.memory_snapshot_directory)
 	for name in ("vmstate.bin", "mem.bin"):
 		source = f"{warm_snapshot_directory}/{name}"
-		if not run_ok("sudo", "test", "-s", source):
+		if not run_ok("sudo test -s {}", source):
 			sys.exit(f"warm snapshot file missing or empty: {source}; re-bake the warm golden")
-		run("sudo", "ln", "-f", source, f"{paths.memory_snapshot_directory}/{name}")
-	run("sudo", "cp", f"{warm_snapshot_directory}/host-signature.json", paths.memory_snapshot_signature)
-	run("sudo", "touch", paths.memory_snapshot_marker)
+		run("sudo ln -f {} {}", source, f"{paths.memory_snapshot_directory}/{name}")
+	run("sudo cp {} {}", f"{warm_snapshot_directory}/host-signature.json", paths.memory_snapshot_signature)
+	run("sudo touch {}", paths.memory_snapshot_marker)
 
 
 def _firecracker_config(inputs: "ProvisionInputs") -> str:

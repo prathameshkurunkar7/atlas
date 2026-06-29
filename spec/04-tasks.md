@@ -275,6 +275,35 @@ def main() -> None:
   each command (the `set -x` trace into the Task log) and raises on non-zero
   (the `set -e` abort). Everything else is pure functions over strings.
 
+  **`run()` reads like a shell line, safely.** It takes a single command STRING;
+  interpolated values go through `{}` placeholders that are `shlex.quote`d
+  automatically, then the whole string is `shlex.split` into an argv and run with
+  `shell=False` (**no shell, ever**):
+
+  ```python
+  run("sudo systemctl stop nginx")                       # literals: clean
+  run("sudo ip link set {} up", tap_device)              # one var, auto-quoted
+  run("sudo ip -6 route replace {}/128 dev {}", ip, tap) # two vars
+  ```
+
+  This is the parameterized-SQL trust model (`execute("… WHERE id = ?", id)`):
+  literal template, quoted holes, and *forgetting to quote is not expressible* —
+  the property the earlier variadic-argv form gave by construction is preserved
+  (a value with an internal space, a `;`, a `|`, a `$(…)` stays exactly one argv
+  token and cannot break out), now with the obvious single-string reading. The
+  substitution is a tiny custom engine (`_substitute`/`_render`), **not**
+  `str.format()`: this codebase is brace-heavy (nft `{ type filter … }` clauses
+  appear verbatim in commands), and the engine consumes only the literal `{}`
+  token, leaving every other brace untouched, so those clauses migrate with zero
+  escaping. Two escape hatches: `shell()` is the *only* way to invoke a real `sh
+  -c` pipeline (`|`, `>`, `*`, `&&` honoured in the template, params still
+  auto-quoted), and an nft brace-clause that must reach `nft` as ONE argv element
+  is passed as a `{}` param (so `shlex.split` doesn't re-tokenize it). The
+  remote/SSH layer (`run_ssh`) shares the SAME `{}` author syntax but keeps the
+  rendered command a STRING — it is the line the remote sshd hands to the remote
+  shell, so it is quote-substituted but never locally `shlex.split`. Everything
+  else is pure functions over strings.
+
 ### The shared `atlas` package and how it is staged
 
 The lib lives in [`scripts/lib/atlas/`](../scripts/lib/atlas) and is
