@@ -138,13 +138,16 @@ jobs:
       - name: Run Tests
         working-directory: /home/runner/frappe-bench
         # --coverage uses frappe.coverage.CodeCoverage (the `coverage` package is
-        # already a frappe dependency — no extra dependency added). It writes
-        # coverage.xml into the bench dir, scoped to apps/atlas. We also render a
-        # browsable HTML report from the same data with `coverage html`.
+        # already a frappe dependency — no extra dependency added). bench runs
+        # its subcommands with cwd=<bench>/sites, and CodeCoverage uses relative
+        # paths, so both coverage.xml and the (suffixed) .coverage data file land
+        # in sites/, not the bench root. Render the browsable HTML report from
+        # that same directory. `|| true` keeps a missing/empty report from
+        # failing an otherwise-green test run (coverage html exits 1 on no data).
         run: |
           bench --site test_site set-config allow_tests true
           bench --site test_site run-tests --app atlas --coverage
-          env/bin/coverage html -d htmlcov
+          ( cd sites && ../env/bin/coverage html -d htmlcov ) || true
         env:
           TYPE: server
 
@@ -154,5 +157,5 @@ jobs:
         with:
           name: coverage-server
           path: |
-            /home/runner/frappe-bench/coverage.xml
-            /home/runner/frappe-bench/htmlcov
+            /home/runner/frappe-bench/sites/coverage.xml
+            /home/runner/frappe-bench/sites/htmlcov
