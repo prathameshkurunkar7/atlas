@@ -121,12 +121,19 @@ def _finalize_proxy(virtual_machine, connection, key_path) -> tuple[str, str, in
 	# Local import: proxy.py imports image_builder (for build_proxy → run_build),
 	# which imports this module — so importing proxy at module scope would cycle.
 	# REGION_FILE is a plain constant; pull it in only when the finalize runs.
-	from atlas.atlas.placement import atlas_region
+	from atlas.atlas.placement import active_root_domain
 	from atlas.atlas.proxy import REGION_FILE
 
-	region = atlas_region()
+	# The proxy's routing lua strips the FULL regional wildcard zone from each Host /
+	# SNI (router.lua / sni_router.lua / acme_router.lua), so write the active Root
+	# Domain's zone (e.g. "blr1.frappe.dev" or "aditya-blr3.x.frappe.dev") — NOT the
+	# bare region. The lua used to reconstruct region .. ".frappe.dev", which assumed
+	# the region sat one label under frappe.dev and dropped every connection under a
+	# deeper platform zone like x.frappe.dev. The file name stays REGION_FILE for
+	# image/back-compat; its contents are now the zone.
+	root_domain = active_root_domain().domain
 	command = (
-		f"printf '%s\\n' {shlex.quote(region)} > {shlex.quote(REGION_FILE)} && "
+		f"printf '%s\\n' {shlex.quote(root_domain)} > {shlex.quote(REGION_FILE)} && "
 		"systemctl restart nginx.service"
 	)
 	return run_ssh(connection, key_path, command, timeout_seconds=120)

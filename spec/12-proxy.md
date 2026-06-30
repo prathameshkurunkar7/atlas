@@ -55,6 +55,18 @@ both public ports:
         everything else                        -> 308 -> https   (unchanged)
 ```
 
+**The wildcard-zone suffix the proxy strips is the FULL active `Root Domain`**
+(`<region>.<platform>`, e.g. `blr1.frappe.dev` or `aditya-blr3.x.frappe.dev`),
+**not** `region + ".frappe.dev"`. `_finalize_proxy` writes that zone to the proxy's
+region file (`/var/lib/nginx/region`); `init_by_lua` reads it into the global
+`atlas_root_domain`, and all three predicates (`router.lua`, `sni_router.lua`,
+`acme_router.lua`) strip exactly `".<atlas_root_domain>"`. Reconstructing the zone
+as `region + ".frappe.dev"` assumed the region sat one label under `frappe.dev`,
+so a deeper platform zone (`x.frappe.dev`) made every wildcard SNI miss the suffix
+test and drop the connection (`no host in upstream ""`). The region *id* still
+scopes the on-disk cert dir (`certs/<region>/`, controller-side via
+`atlas_region()`) — that is a separate concern from the zone the lua strips.
+
 The `stream{}` subsystem moves to the **front** and owns `[::]:443` + the
 reserved-v4 `:443` (it already owns the `10000-19999` L4 pool,
 [17-tcp-proxy.md](./17-tcp-proxy.md), so this is its second listener kind). The

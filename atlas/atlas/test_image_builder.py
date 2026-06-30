@@ -30,6 +30,26 @@ def _purge() -> None:
 		frappe.delete_doc("Virtual Machine", name, force=1, ignore_permissions=True)
 
 
+def _ensure_active_root_domain(domain: str, region: str) -> None:
+	"""The single active Root Domain `_finalize_proxy` reads (active_root_domain())
+	to write the proxy's wildcard zone. Idempotent; mirrors test_bench_routing."""
+	if not frappe.db.exists("Root Domain", domain):
+		frappe.get_doc(
+			{
+				"doctype": "Root Domain",
+				"domain": domain,
+				"region": region,
+				"is_active": 1,
+				"dns_provider_type": "Route53",
+				"tls_provider_type": "Let's Encrypt",
+			}
+		).insert(ignore_permissions=True)
+	frappe.db.set_value("Root Domain", domain, "is_active", 1)
+	for name in frappe.get_all("Root Domain", filters={"is_active": 1}, pluck="name"):
+		if name != domain:
+			frappe.db.set_value("Root Domain", name, "is_active", 0)
+
+
 @contextlib.contextmanager
 def _mock_build_ssh(build_result, finalize_result=("", "", 0)):
 	"""Patch the guest-SSH plumbing run_build uses. `build_result` is what the
@@ -218,10 +238,12 @@ class TestRunBuild(IntegrationTestCase):
 		_ensure_test_server()
 		_ensure_test_image()
 		_purge()
-		# The proxy finalize recipe reads Atlas Settings.region (no per-VM region
-		# field anymore) to write the region + name the cert dir. Pin it so the
-		# finalize command carries "blr1" and atlas_region() doesn't throw.
+		# The proxy finalize recipe writes the active Root Domain's wildcard zone to
+		# the region file (the proxy lua strips that full suffix). Pin the region and
+		# an active Root Domain so the finalize command carries "blr1.frappe.dev" and
+		# active_root_domain() doesn't throw.
 		frappe.db.set_single_value("Atlas Settings", "region", "blr1")
+		_ensure_active_root_domain("blr1.frappe.dev", "blr1")
 
 	def test_uploads_tree_then_runs_detached_and_records_task(self) -> None:
 		vm = _new_vm()
@@ -274,10 +296,10 @@ class TestRunBuild(IntegrationTestCase):
 		vm = _new_vm(is_proxy=1, region="blr1")
 		with _mock_build_ssh(("built", "", 0)) as (_ssh, _scp, _det, _fh, finalize_run_ssh):
 			image_builder.run_build(vm.name, _PROXY)
-		# The proxy recipe's finalize wrote the region + restarted the unit.
+		# The proxy recipe's finalize wrote the wildcard zone + restarted the unit.
 		finalize_run_ssh.assert_called_once()
 		finalize_command = finalize_run_ssh.call_args.args[2]
-		self.assertIn("blr1", finalize_command)
+		self.assertIn("blr1.frappe.dev", finalize_command)
 		self.assertIn("systemctl restart nginx.service", finalize_command)
 		# It must NOT repoint the cert symlink (push_cert owns that, after the real
 		# cert lands — repointing here would dangle the symlink at start).
