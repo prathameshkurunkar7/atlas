@@ -39,6 +39,22 @@ ADMIN_SOCKET = "/run/nginx/admin.sock"
 # path the http admin's curl uses: GET-SNI / SYNC-SNI for the custom-domain :443 SNI map.
 STREAM_ADMIN_BIN = "stream-admin"
 CERT_DIRECTORY = "/var/lib/nginx/certs"
+# The self-signed cert the :8446 unconfigured-domain terminator presents for a custom
+# domain pointed here but not connected to a site. Its Subject DN IS the message: a
+# browser never trusts it, so the visitor lands on the cert warning and can open "view
+# certificate" — the only channel a self-signed cert has to a human — where the details
+# pane shows these fields verbatim (and, self-signed ⇒ issuer==subject, "Issued By"
+# mirrors them). Kept byte-identical to build.sh's `-subj` so a targeted regen
+# (`regenerate_placeholder_cert`) and a full re-bake write the SAME cert. The `\/` is
+# OpenSSL's `-subj` escape for a literal slash in the URL (an unescaped `/` starts a new
+# RDN); it survives shell-quoting as one argv token. Plain ASCII ≤64 chars/field
+# (RFC 5280 DN bound; no emoji — PrintableString rejects them, some cert UIs mangle them).
+PLACEHOLDER_DIRECTORY = f"{CERT_DIRECTORY}/_placeholder"
+PLACEHOLDER_CERT_SUBJECT = (
+	"/CN=This domain is not connected to a site yet"
+	"/O=Frappe Cloud"
+	"/OU=Connect it in your dashboard: frappe.dev\\/domains"
+)
 # The guest file build.sh leaves empty and the proxy recipe's finalize step writes
 # the real region into (image_recipes._finalize_proxy); init_by_lua reads it.
 REGION_FILE = "/var/lib/nginx/region"
@@ -258,6 +274,50 @@ def push_cert(virtual_machine: str, fullchain: str, privkey: str) -> None:
 	_record_guest_task(virtual_machine, "proxy-push-cert", {"region": region}, stdout, stderr, code)
 	if code != 0:
 		frappe.throw(f"Cert push/reload to {virtual_machine} failed (exit {code}): {stderr[-500:]}")
+
+
+def regenerate_placeholder_cert(virtual_machine: str) -> None:
+	"""Regenerate the :8446 unconfigured-domain placeholder cert on a live proxy and
+	reload, WITHOUT a full re-bake.
+
+	build.sh writes this same cert (PLACEHOLDER_CERT_SUBJECT) every bake, so the
+	authoritative way to change it is `build_proxy` (the 10-20 min guest recompile).
+	This is the fast path for a cert-only change: run the byte-identical `openssl req`
+	in the guest's `_placeholder` dir, restore the perms build.sh sets, and reload. It
+	touches ONLY certs/_placeholder/{fullchain,privkey}.pem — the flat certs/ symlink
+	nginx reads for the wildcard block still points at the real region cert push_cert
+	installed (the :8446 block pins the _placeholder path directly), so the wildcard is
+	untouched. Idempotent; recorded as a `proxy-regen-placeholder` Task like every guest
+	op. Keep this openssl invocation in lockstep with build.sh's."""
+	vm = frappe.get_doc("Virtual Machine", virtual_machine)
+	if not vm.is_proxy:
+		frappe.throw(f"Virtual Machine {virtual_machine} is not a proxy (is_proxy unset)")
+	connection = connection_for_guest(vm)
+	fullchain = f"{PLACEHOLDER_DIRECTORY}/fullchain.pem"
+	privkey = f"{PLACEHOLDER_DIRECTORY}/privkey.pem"
+	# One round trip: (re)generate into the _placeholder dir, restore the perms build.sh
+	# sets (dir 0750, key 0640, both root-owned — the master reads the key at config
+	# parse, never a worker, so no group-read; CIS 4.1.3), then reload so the new cert is
+	# served. `-nodes` = unencrypted key, rsa:2048/3650d exactly as build.sh.
+	command = substitute(
+		"install -d -m 0750 {} && "
+		"openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout {} -out {} -subj {} && "
+		"chmod 0640 {} && /usr/sbin/nginx -s reload",
+		(
+			PLACEHOLDER_DIRECTORY,
+			privkey,
+			fullchain,
+			PLACEHOLDER_CERT_SUBJECT,
+			privkey,
+		),
+	)
+	with ssh_key_file(connection.ssh_private_key) as key_path:
+		stdout, stderr, code = run_ssh(connection, key_path, command, timeout_seconds=60)
+	_record_guest_task(virtual_machine, "proxy-regen-placeholder", {}, stdout, stderr, code)
+	if code != 0:
+		frappe.throw(
+			f"Placeholder cert regen/reload to {virtual_machine} failed (exit {code}): {stderr[-500:]}"
+		)
 
 
 def build_proxy(virtual_machine: str) -> None:

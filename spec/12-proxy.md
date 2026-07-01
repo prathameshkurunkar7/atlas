@@ -47,7 +47,8 @@ both public ports:
 :443  stream{}  — SNI fork (ssl_preread, no decrypt):
         SNI under *.<region>.<domain>  -> 127.0.0.1:8443  (local http{} terminator, the L7 path below)
         SNI is a known custom domain   -> [vm_v6]:443      (raw passthrough; VM terminates)
-        miss                           -> drop             (unknown / deregistered name, 13-tls.md)
+        named miss                     -> 127.0.0.1:8446   (dummy-cert terminator -> branded "Domain not configured" page, 13-tls.md)
+        empty SNI (bare IP / probe)    -> drop             (no name to brand)
 
 :80   http{}   — Host-header fork (cleartext, no SNI):
         acme-challenge + Host under wildcard  -> serve LOCALLY  (no VM may answer a *.<region> challenge)
