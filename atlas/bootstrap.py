@@ -154,10 +154,17 @@ MINIMAL_IMAGE_NAME = "ubuntu-24.04-minimal"
 
 # Golden bench build VM sizing — a Frappe clone + uv venv + node deps overflow the
 # 4 GB base image, so the build VM (and therefore the snapshot, and every site VM
-# cloned from it) gets a roomier disk + RAM. Mirrors bench_image.GOLDEN_DISK_GB /
-# GOLDEN_MEMORY_MB (the e2e bake) — keep the two in sync.
-GOLDEN_DISK_GB = 12
-GOLDEN_MEMORY_MB = 2048
+# cloned from it) gets a roomier disk + RAM. The bench recipe is the SINGLE source
+# of truth (image_recipes._BENCH_DISK_GB / _BENCH_MEMORY_MB — bumped 12→20→28 as the
+# ZFS vdev grew), so read the sizing off it the way the e2e bake does. A hardcoded
+# constant drifted below the recipe once (stale `12`) and the bench bake died with a
+# ZFS-vdev / yarn-step "No space left on device" that looked like a build bug but was
+# just an undersized disk — derive it so that can never recur.
+from atlas.atlas.image_recipes import get_recipe as _get_recipe
+
+_BENCH_RECIPE = _get_recipe("bench")
+GOLDEN_DISK_GB = _BENCH_RECIPE.disk_gigabytes
+GOLDEN_MEMORY_MB = _BENCH_RECIPE.memory_megabytes
 GOLDEN_SNAPSHOT_TITLE = "golden-bench"
 
 # Proxy VM sizing. The proxy runs nginx+Lua only (no site DB), so it is small; it
