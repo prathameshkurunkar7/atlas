@@ -144,6 +144,60 @@ _JUNK_UNITS = (
 	# (~10s). The guest now has virtio-rng (/dev/hwrng) from the host, so the
 	# boot-time entropy it seeds is unnecessary. See provision-vm.py "entropy".
 	"pollinate.service",
+	# unattended-upgrades + apt timers. unattended-upgrades is the
+	# fattest userland RSS (~23 MB); worse, auto-apt on a live site VM can restart
+	# MariaDB/nginx, hold the dpkg lock, or pull a breaking package under a running
+	# site. Version pinning is the golden image's job, not a live guest's.
+	"unattended-upgrades.service",
+	"apt-daily.service",
+	"apt-daily.timer",
+	"apt-daily-upgrade.service",
+	"apt-daily-upgrade.timer",
+	# rsyslog. The server image runs journald AND rsyslog, double-writing
+	# every log to /var/log/syslog. journald alone suffices (the minimal image ships
+	# no rsyslog and is fine); dropping it saves the second writer fighting
+	# MariaDB/nginx for ZFS I/O. journald is capped file-driven in _normalize_rootfs.
+	"rsyslog.service",
+	# storage stack. Verified inert on the guest: one virtio disk, no
+	# dmsetup devices, empty /proc/mdstat, no iscsi sessions — LVM/CoW/RAID live on
+	# the HOST. (multipathd.service/.socket are already masked above; do NOT
+	# duplicate.) Masking these drops idle sockets/timers + a few loaded units.
+	"lvm2-monitor.service",
+	"blk-availability.service",
+	"dm-event.socket",
+	"open-iscsi.service",
+	"iscsid.socket",
+	"mdmonitor.service",
+	"mdmonitor-oneshot.service",
+	"mdcheck_start.timer",
+	"mdcheck_continue.timer",
+	# virtual-console plumbing. The guest is reached only over SSH; agetty
+	# on tty1 is not a real recovery path, and console-setup/keyboard-setup/setvtrgb
+	# configure a physical console that doesn't exist. getty@tty1 is a template
+	# instance — masking the instance name stops it; verified it does not resurrect
+	# via getty.target.wants (booted VMs answer SSH with these masked, 0 failed).
+	"getty@tty1.service",
+	"setvtrgb.service",
+	"keyboard-setup.service",
+	"console-setup.service",
+	# cron. The only cron content is distro maintenance we're removing;
+	# Frappe's scheduler runs inside bench (RQ), not system cron. Future Pilot
+	# OS-level schedules should ship as *.timer units (the image already runs
+	# apt/logrotate/fstrim that way), never a resurrected crond.
+	"cron.service",
+	# cosmetic / telemetry timers. motd-news, update-notifier,
+	# fwupd-refresh, Ubuntu Pro (ua-timer), man-db and dpkg-db-backup are pure
+	# idle overhead on a single-tenant guest; several phone Canonical at idle.
+	# networkd-dispatcher's event hooks are unused (atlas-network owns addressing).
+	"motd-news.timer",
+	"motd-news.service",
+	"update-notifier-download.timer",
+	"update-notifier-motd.timer",
+	"fwupd-refresh.timer",
+	"ua-timer.timer",
+	"man-db.timer",
+	"dpkg-db-backup.timer",
+	"networkd-dispatcher.service",
 )
 
 
@@ -346,6 +400,16 @@ def _normalize_rootfs(root: str) -> None:
 	#      removing the hook takes an `apt install` from ~8s to ~1s. `rm -f` is a
 	#      documented no-op if a future image drops the file.
 	run("sudo rm -f {}", f"{root}/etc/apt/apt.conf.d/20packagekit")
+
+	# 3a.10 Cap journald. With rsyslog masked (see _JUNK_UNITS) journald
+	#       is the sole log sink; its store lives on ZFS alongside MariaDB, so bound
+	#       it small to keep logs from fighting the site workload for pool I/O.
+	install_directory(f"{root}/etc/systemd/journald.conf.d", mode="0755")
+	install_file(
+		"[Journal]\nSystemMaxUse=50M\nRuntimeMaxUse=50M\n",
+		f"{root}/etc/systemd/journald.conf.d/00-atlas.conf",
+		mode="0644",
+	)
 
 
 def _manifest_url(rootfs_url: str) -> str:
