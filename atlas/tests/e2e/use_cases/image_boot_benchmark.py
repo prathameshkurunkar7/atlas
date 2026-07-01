@@ -358,15 +358,44 @@ done
 
 # Host-side: read the guest's boot profile in one shot, each value on a tagged
 # line. `S <cmd>` runs the cmd on the guest over the staged key.
+#
+# Every marker here answers "when can the user do X?" from the guest's OWN
+# monotonic clock, so the numbers are image-attributable with zero host offset:
+#   * ANALYZE      — kernel/userspace/total to the default target.
+#   * SSHD_US      — ssh.service active: the "when can I log in?" number, the one
+#                    we are optimizing toward.
+#   * NET_US       — network.target active (atlas-network done): when egress works.
+#   * MULTI_US     — multi-user.target active: userspace fully up.
+#   * CRNG / HWRNG — entropy markers (see module docstring).
+#   * BLAME        — the single slowest unit (headline regression sentinel).
+#   * BLAME5       — top-5 units, ';'-joined, so a shift in the serial gate shows.
+#   * CHAIN        — the critical-chain leaf→root path, '|'-joined: the SERIAL
+#                    path that actually gates boot. This is where a Tier-2 strip
+#                    proves it moved the gate, not just some parallel unit.
+#   * RUNNING      — count of running services + their names: daemon-count wins
+#                    (2.1 networkd / 2.2 udevd) show here even at ~0 boot-ms.
+#   * FAILED       — count of failed units: a strip that breaks a unit surfaces.
+#   * PSS_KB       — total userspace PSS (KB): the RAM footprint at idle.
+#   * PROCS        — userspace process count.
 _GUEST_PROFILE = r"""
 g={guest}
 S() {{ ssh -i /tmp/hp.key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
   -o BatchMode=yes -o ConnectTimeout=5 root@"$g" "$1" 2>/dev/null; }}
 echo "ANALYZE=$(S 'systemd-analyze 2>/dev/null | head -1')"
 echo "SSHD_US=$(S 'systemctl show ssh.service -p ActiveEnterTimestampMonotonic --value 2>/dev/null || systemctl show sshd.service -p ActiveEnterTimestampMonotonic --value 2>/dev/null')"
+echo "SSHSOCK_US=$(S 'systemctl show ssh.socket -p ActiveEnterTimestampMonotonic --value 2>/dev/null')"
+echo "NET_US=$(S 'systemctl show network.target -p ActiveEnterTimestampMonotonic --value 2>/dev/null')"
+echo "MULTI_US=$(S 'systemctl show multi-user.target -p ActiveEnterTimestampMonotonic --value 2>/dev/null')"
 echo "CRNG=$(S 'dmesg 2>/dev/null | grep -m1 "crng init done"')"
 echo "HWRNG=$(S 'cat /sys/class/misc/hw_random/rng_current 2>/dev/null')"
 echo "BLAME=$(S 'systemd-analyze blame 2>/dev/null | head -1')"
+echo "BLAME5=$(S 'systemd-analyze blame 2>/dev/null | head -5 | tr "\n" ";"')"
+echo "CHAIN=$(S 'systemd-analyze critical-chain --no-pager 2>/dev/null | sed 1,2d | sed "s/[^a-zA-Z0-9@._-]//g" | tr "\n" "|"')"
+echo "RUNNING=$(S 'systemctl list-units --type=service --state=running --no-legend --no-pager 2>/dev/null | wc -l')"
+echo "RUNNAMES=$(S 'systemctl list-units --type=service --state=running --no-legend --no-pager 2>/dev/null | awk "{{print \$1}}" | tr "\n" ";"')"
+echo "FAILED=$(S 'systemctl --failed --no-legend --no-pager 2>/dev/null | wc -l')"
+echo "MEM=$(S 'for d in /proc/[0-9]*; do r=$d/smaps_rollup; [ -r "$r" ] && awk "/^Pss:/{{p+=\$2}} END{{print p+0}}" $r; done | awk "{{s+=\$1}} END{{print s+0}}"')"
+echo "PROCS=$(S 'ls -d /proc/[0-9]* 2>/dev/null | wc -l')"
 """
 
 
@@ -391,6 +420,18 @@ def _parse_profile(out: str) -> dict:
 			v = line[len("SSHD_US=") :]
 			if v.isdigit() and int(v) > 0:
 				markers["sshd_ms"] = int(v) / 1000.0
+		elif line.startswith("SSHSOCK_US="):
+			v = line[len("SSHSOCK_US=") :]
+			if v.isdigit() and int(v) > 0:
+				markers["sshsock_ms"] = int(v) / 1000.0
+		elif line.startswith("NET_US="):
+			v = line[len("NET_US=") :]
+			if v.isdigit() and int(v) > 0:
+				markers["network_ms"] = int(v) / 1000.0
+		elif line.startswith("MULTI_US="):
+			v = line[len("MULTI_US=") :]
+			if v.isdigit() and int(v) > 0:
+				markers["multiuser_ms"] = int(v) / 1000.0
 		elif line.startswith("CRNG="):
 			m = re.search(r"\[\s*([\d.]+)\]", line)
 			if m:
@@ -399,6 +440,28 @@ def _parse_profile(out: str) -> dict:
 			markers["hwrng"] = line[len("HWRNG=") :].strip() or "none"
 		elif line.startswith("BLAME="):
 			markers["top_blame"] = line[len("BLAME=") :].strip()
+		elif line.startswith("BLAME5="):
+			markers["blame5"] = line[len("BLAME5=") :].strip().strip(";")
+		elif line.startswith("CHAIN="):
+			markers["critical_chain"] = line[len("CHAIN=") :].strip().strip("|")
+		elif line.startswith("RUNNING="):
+			v = line[len("RUNNING=") :].strip()
+			if v.isdigit():
+				markers["running_services"] = int(v)
+		elif line.startswith("RUNNAMES="):
+			markers["running_names"] = line[len("RUNNAMES=") :].strip().strip(";")
+		elif line.startswith("FAILED="):
+			v = line[len("FAILED=") :].strip()
+			if v.isdigit():
+				markers["failed_units"] = int(v)
+		elif line.startswith("MEM="):
+			v = line[len("MEM=") :].strip()
+			if v.isdigit():
+				markers["userspace_pss_kb"] = int(v)
+		elif line.startswith("PROCS="):
+			v = line[len("PROCS=") :].strip()
+			if v.isdigit():
+				markers["proc_count"] = int(v)
 	return markers
 
 
@@ -473,8 +536,29 @@ def _active_scaleway_server() -> str:
 	return rows[0]
 
 
-# The numeric markers we aggregate, in report order.
-_NUMERIC_MARKERS = ("provision_ms", "kernel_ms", "userspace_ms", "total_ms", "sshd_ms", "crng_ms")
+# The numeric (millisecond) markers we aggregate + median, in report order.
+# network_ms / multiuser_ms / sshd_ms are the "when can I do X?" boot markers;
+# sshd_ms is the headline target (time-to-SSH).
+_NUMERIC_MARKERS = (
+	"provision_ms",
+	"kernel_ms",
+	"userspace_ms",
+	"total_ms",
+	"network_ms",
+	"sshsock_ms",
+	"sshd_ms",
+	"multiuser_ms",
+	"crng_ms",
+)
+
+# Non-time markers aggregated as medians (footprint / daemon-count), reported
+# separately from the millisecond timers.
+_COUNT_MARKERS = (
+	("userspace_pss_kb", "idle PSS", "MB", 1024.0),
+	("running_services", "running svcs", "", 1.0),
+	("failed_units", "failed units", "", 1.0),
+	("proc_count", "procs", "", 1.0),
+)
 
 
 def _fmt(sample: dict) -> str:
@@ -482,19 +566,27 @@ def _fmt(sample: dict) -> str:
 		v = sample.get(key)
 		return f"{v / 1000:.2f}s" if v is not None else "—"
 
+	pss = sample.get("userspace_pss_kb")
+	mem = f"{pss / 1024:.0f}MB" if pss is not None else "—"
 	return (
 		f"prov={ms('provision_ms')} kernel={ms('kernel_ms')} "
-		f"userspace={ms('userspace_ms')} boot->sshd={ms('sshd_ms')} "
-		f"crng={ms('crng_ms')} hwrng={sample.get('hwrng', '?')}"
+		f"userspace={ms('userspace_ms')} net={ms('network_ms')} "
+		f"ssh.sock={ms('sshsock_ms')} boot->sshd={ms('sshd_ms')} multiuser={ms('multiuser_ms')} "
+		f"crng={ms('crng_ms')} hwrng={sample.get('hwrng', '?')} "
+		f"pss={mem} run={sample.get('running_services', '?')} "
+		f"failed={sample.get('failed_units', '?')} procs={sample.get('proc_count', '?')}"
 	)
 
 
 def _report(old_image: str, new_image: str, results: dict[str, list[dict]]) -> None:
 	print("\n" + "=" * 78)
 	print("IMAGE BOOT BENCHMARK — boot markers read from the GUEST's own clocks")
-	print("(systemd-analyze + dmesg), reached over the host's routed-tap path.")
-	print("kernel/userspace/total: systemd-analyze. boot->sshd: ssh.service active.")
-	print("crng: kernel 'crng init done'. hwrng: bound RNG source. prov: provision Task.")
+	print("(systemd-analyze + dmesg + /proc), reached over the host's routed-tap path.")
+	print("kernel/userspace/total: systemd-analyze. net: network.target active.")
+	print("boot->sshd: ssh.service active (TIME-TO-SSH, the target). multiuser:")
+	print("multi-user.target active. crng: kernel 'crng init done'. hwrng: bound RNG.")
+	print("pss: idle userspace PSS. run: running services. procs: userspace proc count.")
+	print("Per-VM lines also show blame top5, the critical-chain, and running svc names.")
 	print("=" * 78)
 
 	for image in (old_image, new_image):
@@ -506,8 +598,14 @@ def _report(old_image: str, new_image: str, results: dict[str, list[dict]]) -> N
 			continue
 		for s in samples:
 			print(f"  {s['vm'][:8]}  {_fmt(s)}")
-			if s.get("top_blame"):
+			if s.get("blame5"):
+				print(f"            blame top5: {s['blame5']}")
+			elif s.get("top_blame"):
 				print(f"            slowest unit: {s['top_blame']}")
+			if s.get("critical_chain"):
+				print(f"            crit-chain: {s['critical_chain']}")
+			if s.get("running_names"):
+				print(f"            running:    {s['running_names']}")
 		for key in _NUMERIC_MARKERS:
 			values = [s[key] for s in samples if s.get(key) is not None]
 			if values:
@@ -515,14 +613,38 @@ def _report(old_image: str, new_image: str, results: dict[str, list[dict]]) -> N
 				mn = min(values) / 1000
 				mx = max(values) / 1000
 				print(f"  {key:13s} median={med:6.2f}s  min={mn:6.2f}s  max={mx:6.2f}s  (n={len(values)})")
+		for key, label_txt, unit, div in _COUNT_MARKERS:
+			values = [s[key] for s in samples if s.get(key) is not None]
+			if values:
+				med = statistics.median(values) / div
+				mn = min(values) / div
+				mx = max(values) / div
+				print(
+					f"  {label_txt:13s} median={med:6.1f}{unit}  min={mn:6.1f}  max={mx:6.1f}  (n={len(values)})"
+				)
 
 	# Head-to-head deltas on the boot markers that actually move.
 	print("\n" + "-" * 78)
-	print("DELTA (NEW - OLD) on medians; negative = NEW is faster")
-	for key in ("kernel_ms", "userspace_ms", "total_ms", "sshd_ms", "crng_ms"):
+	print("DELTA (NEW - OLD) on medians; negative = NEW is faster/lighter")
+	for key in (
+		"kernel_ms",
+		"userspace_ms",
+		"total_ms",
+		"network_ms",
+		"sshsock_ms",
+		"sshd_ms",
+		"multiuser_ms",
+		"crng_ms",
+	):
 		old_v = [s[key] for s in results[old_image] if s.get(key) is not None]
 		new_v = [s[key] for s in results[new_image] if s.get(key) is not None]
 		if old_v and new_v:
 			delta = (statistics.median(new_v) - statistics.median(old_v)) / 1000
 			print(f"  {key:13s} {delta:+.2f}s")
+	for key, label_txt, unit, div in _COUNT_MARKERS:
+		old_v = [s[key] for s in results[old_image] if s.get(key) is not None]
+		new_v = [s[key] for s in results[new_image] if s.get(key) is not None]
+		if old_v and new_v:
+			delta = (statistics.median(new_v) - statistics.median(old_v)) / div
+			print(f"  {label_txt:13s} {delta:+.1f}{unit}")
 	print("=" * 78)
