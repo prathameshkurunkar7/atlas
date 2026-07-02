@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Bring up one end of a VM migration's keep-address forward tunnel (spec/24 §2.9).
+# Bring up one end of a VM migration's keep-address forward tunnel (spec/19 §2.9).
 #
 # When a VM migrates keeping its /128, the source host keeps holding the /64 the
 # /128 is carved from — so it keeps receiving the VM's inbound traffic — and it
@@ -12,7 +12,7 @@
 # The tunnel is a `tun` device (one L3 family — the inner IPv6 /128) whose frames
 # socat bridges to a plain TCP stream between the two hosts. STAGE transport is
 # UNENCRYPTED plain TCP, matching the stage-1 NBD path (a secure host-to-host
-# carrier is a deferred follow-up, spec/24 §2.1). The device name and TCP port
+# carrier is a deferred follow-up, spec/19 §2.1). The device name and TCP port
 # are pure functions of the VM UUID, so both hosts derive them identically and a
 # lost-task re-entry needs no stored state.
 #
@@ -31,6 +31,7 @@
 # Emits ATLAS_RESULT={"tunnel_device": "...", "up": true}
 
 import os
+import shlex
 import sys
 import typing
 from dataclasses import dataclass
@@ -42,7 +43,7 @@ from atlas._task import TaskInputs, TaskResult
 
 # The tunnel carries exactly one inner family (the VM's IPv6 /128). Pin the MTU
 # to the IPv6 minimum so the socat/TCP encapsulation never triggers in-tunnel
-# PMTU surprises under live load (spec/24 §2.1). The two ends address the tunnel
+# PMTU surprises under live load (spec/19 §2.1). The two ends address the tunnel
 # with a link-local /64 (fe80::a source / fe80::b target) purely so the device is
 # "up with an address"; the guest's /128 is routed over it, not assigned on it.
 TUNNEL_MTU = 1280
@@ -60,6 +61,13 @@ class ForwardUpInputs(TaskInputs):
 	tunnel_device: str
 	tunnel_port: int
 	source_host: str = ""
+	# The traffic-steering state each side owns, OPTIONAL because forward-up runs
+	# twice: at TargetPreparing (bare tunnel, no routes yet — these empty) and again
+	# at cutover from the source-forward/target-receive scripts (routes now known —
+	# these set). When set they are baked into the unit's ExecStartPost so a socat
+	# RESTART re-lays them onto the freshly-created tun device (see _ensure_socat).
+	virtual_machine_ipv6: str = ""
+	route_table: int = 0
 
 
 @dataclass(frozen=True)
@@ -104,31 +112,99 @@ def _ensure_socat(inputs: ForwardUpInputs) -> None:
 
 	Source LISTENS (TCP-LISTEN, reuseaddr so a re-entry rebinds cleanly); target
 	CONNECTS (TCP:<source>:<port>, retry+forever so it rides out the source
-	not-yet-listening and any mid-window blip)."""
+	not-yet-listening and any mid-window blip).
+
+	**The forward is PERMANENT, but socat's carrier is ONE TCP connection with no
+	fork (single-TUN model, see above) — so when that connection ends, socat's
+	process ends.** A keep-address forward that outlives its migration must therefore
+	survive the carrier dropping (an idle-timeout on a stateful hop, a peer host
+	reboot, a mid-stream RST): otherwise the tun device dies with the process and the
+	/128 black-holes with no recovery (observed in the field — the source socat
+	exited `Result=success`, NRestarts=0, and never came back). So:
+	  - `Restart=always` + `RestartSec` — systemd relaunches socat when the carrier
+	    ends. The source re-listens; the target's `forever` re-dials. This is what
+	    makes the forward actually permanent, not just live-until-first-disconnect.
+	  - NO `--collect`: we want the unit definition to persist across restarts, not be
+	    garbage-collected the instant the process dies.
+	  - TCP `keepalive` on both ends so a SILENTLY dropped peer (half-open connection,
+	    no FIN/RST — e.g. the far host vanished) is detected in bounded time and socat
+	    exits, letting Restart redial. Without it a half-open carrier reads "active"
+	    forever while forwarding nothing.
+
+	**A restart makes socat create a BRAND-NEW tun device — same name, but the addr,
+	MTU, and any routes on the OLD device are gone with it** (verified in the field:
+	after one restart the device came back with the default 1500 MTU, a random SLAAC
+	link-local, and NO /128 route — carrier ESTAB but 100% packet loss). So the
+	addressing AND the side's traffic route must be re-established on EVERY start, not
+	once by the Python task (which does not re-run on a systemd restart). We bake them
+	into the unit as `ExecStartPost` (see _rewire_command) so systemd itself re-lays
+	the full path each time socat comes up. The desired ExecStartPost GROWS at cutover
+	(the route args arrive with source-forward/target-receive), so we must re-lay the
+	unit then even though it is already running: skip only the pre-cutover re-entry
+	(bare tunnel, no route args, unit already alive); once route args are present we
+	always re-lay so the freshly-baked route survives the next restart."""
 	unit = _unit_name(inputs.tunnel_port)
-	if _socat_alive(unit):
+	rewire = _rewire_command(inputs)
+	if _socat_alive(unit) and not inputs.virtual_machine_ipv6:
 		return
 
 	tun = f"TUN,tun-name={inputs.tunnel_device},iff-up,iff-no-pi"
+	# keepalive with a ~30s detection budget (idle 10s, then 5 probes 4s apart) so a
+	# silently-dead carrier is torn down and redialed well inside a human's "it's
+	# down" window, without being so aggressive it flaps on a brief stall.
+	keepalive = "keepalive,keepidle=10,keepintvl=4,keepcnt=5"
 	if inputs.role == "source":
-		endpoint = f"TCP-LISTEN:{inputs.tunnel_port},bind=0.0.0.0,reuseaddr"
+		endpoint = f"TCP-LISTEN:{inputs.tunnel_port},bind=0.0.0.0,reuseaddr,{keepalive}"
 	else:
-		endpoint = f"TCP:{inputs.source_host}:{inputs.tunnel_port},retry=5,forever"
+		endpoint = f"TCP:{inputs.source_host}:{inputs.tunnel_port},retry=5,forever,{keepalive}"
 
 	# systemd-run runs socat as a transient unit's OWN main process (no bash -c
 	# wrapper, no pidfile) — that fully detaches it from this SSH session (a bare
 	# `&` dies on session close, verified on the real hosts for the NBD listener) and
 	# makes `systemctl is-active <unit>` the single source of truth for liveness and
-	# teardown. --unit keeps the name stable so a re-entry finds it; reset-failed
-	# clears a prior crashed instance so the name is reusable. socat's argv is passed
-	# as separate tokens after `--` (TUN FIRST — see above) so systemd-run execs it.
+	# teardown. --unit keeps the name stable so a re-entry finds it. We STOP any prior
+	# instance first (not just reset-failed): a re-lay at cutover must replace a
+	# running unit's now-stale ExecStartPost, and Restart=always means a bare
+	# reset-failed would leave the old process running. Restart=always self-heals the
+	# carrier; ExecStartPost re-lays addr/MTU/route on every (re)start (see above).
+	run("sudo systemctl stop {}", unit, check=False)
 	run("sudo systemctl reset-failed {}", unit, check=False)
 	run(
-		"sudo systemd-run --unit={} --property=Type=simple --collect -- socat {} {}",
+		"sudo systemd-run --unit={} --property=Type=simple"
+		" --property=Restart=always --property=RestartSec=2"
+		" --property=ExecStartPost={} -- socat {} {}",
 		unit,
+		rewire,
 		tun,
 		endpoint,
 	)
+
+
+def _rewire_command(inputs: ForwardUpInputs) -> str:
+	"""The `ExecStartPost=` command that re-establishes this side's full state onto
+	the tun device socat just (re)created: link-local addr, the pinned MTU, and — once
+	known (cutover) — the side's traffic route. Runs on EVERY socat start, so a
+	restart restores the complete path, not a bare device.
+
+	One `/bin/sh -c` string (systemd runs a single ExecStartPost binary; sh lets us
+	wait-for-device then chain the idempotent `ip` commands). The device may lag
+	socat's fork by a few ms on a cold start, so we spin briefly. Every `ip` verb is
+	`replace`/idempotent. Source lays the `<vmv6>/128 dev <tun>` delivery route;
+	target lays the return table's `default dev <tun>`. Before cutover vmv6 is empty,
+	so only addr+MTU are laid (correct — routes must not exist pre-cutover)."""
+	dev = inputs.tunnel_device
+	link_local = SOURCE_LINK_LOCAL if inputs.role == "source" else TARGET_LINK_LOCAL
+	steps = [
+		f"for i in $(seq 50); do ip link show {dev} >/dev/null 2>&1 && break; sleep 0.1; done",
+		f"ip -6 addr replace {link_local} dev {dev} nodad",
+		f"ip link set {dev} mtu {TUNNEL_MTU} up",
+	]
+	if inputs.virtual_machine_ipv6:
+		if inputs.role == "source":
+			steps.append(f"ip -6 route replace {inputs.virtual_machine_ipv6}/128 dev {dev}")
+		else:
+			steps.append(f"ip -6 route replace default dev {dev} table {inputs.route_table}")
+	return "/bin/sh -c " + shlex.quote("; ".join(steps))
 
 
 def _address_tunnel(inputs: ForwardUpInputs) -> None:

@@ -298,16 +298,38 @@ Two provider facts (verified against [06](./06-networking.md) and
 `providers/scaleway.py`) dictate the whole shape, and correct the naive
 "brief inbound-only forward" framing:
 
-1. **Delivery is by the routed flexible IP, not by NDP.** A Scaleway flexible
-   `/64` is *routed* to whichever server holds the FIP; on a routed prefix
-   proxy-NDP is a documented **no-op** (the upstream router already knows the
-   box — [06](./06-networking.md)). The two Elastic Metal boxes are **not** on a
-   shared NDP segment toward the edge, so the target answering NDP for the `/128`
-   is **not** a delivery race and changes nothing. We therefore build **no**
-   "suppress NDP on target / re-assert on source" mechanism — `vm-network-up.py`
-   and `vm-network-down.py` are **unchanged** (their unconditional proxy-NDP
-   add/del is already a no-op on a routed prefix). The **route is the only
-   load-bearing lever.**
+1. **Delivery needs BOTH the `/128` route AND proxy-NDP — CORRECTED, host-verified
+   2026-07-02.** The earlier claim here ("delivery is by the routed flexible IP,
+   proxy-NDP is a no-op on Scaleway; the route is the only load-bearing lever") was
+   **empirically false** on these Elastic Metal hosts and caused a real ingress
+   outage. Scaleway does **not** route the flexible `/64` to the holding host as an
+   on-link block: there is **no `/64` route** on the host (confirmed — only per-`/128`
+   routes and a default via the RA gateway). The edge delivers a `/128` to the host
+   **only while the host answers Neighbor Solicitations for it on the uplink**, exactly
+   as `vm-network-up.py:197` does unconditionally for every provider (`ip -6 neigh
+   replace proxy <vmv6> dev <uplink>`). Field proof: after a keep-address cutover the
+   forward tunnel was healthy and the source-host could ping the VM, but the controller
+   saw **100% loss** and `tcpdump` saw **0 inbound** packets at the source uplink for
+   the `/128`; `ip -6 neigh show proxy` was empty. The instant the proxy-NDP entry was
+   added, controller ping went **100% → 0% loss**. So the keep-address path **must
+   re-assert proxy-NDP on the source at cutover for EVERY provider**, and collapse must
+   deassert it for every provider (symmetry). This is now unconditional in
+   `migration._install_forward_routes` / `collapse_forward` and in
+   `migration-source-forward.py` (default `reassert_proxy_ndp="1"`); the migration
+   doctype's `forward_address` flag is demoted to provider metadata and **no longer
+   gates** NDP. `vm-network-up.py` / `vm-network-down.py` are unchanged — their
+   unconditional proxy-NDP add/del was always correct; it is the migration path that
+   diverged. **Both the route AND proxy-NDP are load-bearing.**
+
+   > **Verification gotcha.** The Scaleway edge caches the resolved neighbor for a
+   > **long** time (>6 min observed). *Deleting* the proxy-NDP entry on an
+   > already-resolved `/128` does **not** drop delivery within a several-minute window,
+   > so a delete-and-wait test misleadingly reads "NDP doesn't matter." The
+   > load-bearing behavior only shows on the **add** direction against a *broken*
+   > address (as the field proof did), or by waiting out the full edge cache TTL.
+   > Separately, `net.ipv6.conf.<uplink>.proxy_ndp=0` is **not** a bug: with
+   > `net.ipv6.conf.all.proxy_ndp=1` and an explicit `neigh … proxy` entry the host
+   > answers NS correctly (the per-interface-sysctl theory was a red herring).
 
 2. **Egress is source-address-validated at the switch — VERIFIED (2026-07-02).**
    [06](./06-networking.md)'s routed-reserved-IP path does no SNAT and no egress
@@ -470,14 +492,19 @@ the source unit is down) re-establishes reachability onto the tunnel:
 ip -6 route replace <vmv6>/128 dev mig6-<fip8>
 nft add rule inet atlas forward ip6 daddr <vmv6> oifname mig6-<fip8> accept
 nft add rule inet atlas forward ip6 saddr <vmv6> iifname mig6-<fip8> accept
+ip -6 neigh replace proxy <vmv6> dev <uplink>          # re-answer NDP — see §2.0
 ```
 
 This is an **atomic** `ip -6 route replace` (single rtnetlink op) — no
 delete-then-add black hole — and `vm-network-down.py` already removed the
 competing same-length local route, so there is no specificity contest.
-Proxy-NDP is irrelevant (no-op on the routed `/64`); we neither re-assert nor
-suppress it. The return path is handled on the target (§2.3); the two `nft` rules
-admit both directions.
+**Proxy-NDP is load-bearing, not a no-op — CORRECTED, see §2.0 item 1.**
+`vm-network-down.py` (`ExecStopPost`) removed this VM's proxy-NDP entry at unit
+stop, and on Scaleway EM the edge delivers the `/128` to the host **only** while
+the host answers NDP for it — so this Task **must re-assert** the entry, or all
+public ingress to the kept `/128` black-holes (host-verified 2026-07-02: 100% →
+0% loss the instant the entry was re-added). The return path is handled on the
+target (§2.3); the two `nft` rules admit both directions.
 
 ### 2.3 Target-side receive — normal `vm-network-up`, plus a BCP38 return route
 

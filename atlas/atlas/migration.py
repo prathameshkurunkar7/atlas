@@ -700,6 +700,14 @@ def _install_forward_routes(doc) -> None:
 	Idempotent: both scripts re-assert with `replace`/duplicate-guarded adds. Moves
 	tunnel_status to Forwarding — the path is now live and stays up permanently."""
 	tunnel_device = doc.tunnel_device or derive_vm_tunnel(doc.virtual_machine)
+	route_table = derive_vm_tunnel_table(doc.virtual_machine)
+	# Re-lay each socat unit with the route now known, so it is baked into the unit's
+	# ExecStartPost: a carrier restart recreates a bare tun device, and only an
+	# ExecStartPost re-applies addr/MTU/route onto it (the Python route scripts below
+	# assert the route ONCE, on the current device, and would not survive a restart).
+	# The route scripts still run — they own the nft rules / (DO) proxy-NDP that
+	# forward-up does not — but the durable route now lives in the unit.
+	_relay_forward_tunnel(doc, tunnel_device, route_table)
 	_run_phase_task(
 		doc,
 		server=doc.target_server,
@@ -720,11 +728,58 @@ def _install_forward_routes(doc) -> None:
 			"VIRTUAL_MACHINE_NAME": doc.virtual_machine,
 			"VIRTUAL_MACHINE_IPV6": doc.ipv6_address_old,
 			"TUNNEL_DEVICE": tunnel_device,
-			"REASSERT_PROXY_NDP": "1" if doc.forward_address else "0",
+			# ALWAYS re-assert proxy-NDP, every provider (not just DigitalOcean). The
+			# upstream switch delivers a /128 to the host only because the host answers
+			# NDP for it — vm-network-up.py does this unconditionally at provision
+			# (line ~197), for Scaleway too. vm-network-down removed it at cutover, so
+			# WITHOUT this re-assert the source stops answering NDP and the switch
+			# black-holes ALL inbound to the /128 (proven in the field: egress works,
+			# public ingress 0% — the earlier "Scaleway routed /64 needs no NDP"
+			# assumption was wrong for these Elastic Metal hosts).
+			"REASSERT_PROXY_NDP": "1",
 		},
 		timeout_seconds=60,
 	)
 	doc.db_set({"tunnel_status": "Forwarding", "forward_active": 1})
+
+
+def _relay_forward_tunnel(doc, tunnel_device: str, route_table: int) -> None:
+	"""keep-address only: re-run migration-forward-up on BOTH hosts WITH the route
+	args, so each socat unit's ExecStartPost now re-lays this side's traffic route on
+	every (re)start. At TargetPreparing the tunnel came up bare (no routes); this is
+	the cutover upgrade that makes the whole path — not just the carrier — survive a
+	socat restart. Idempotent: forward-up stops+re-lays the unit (a running carrier
+	blips for RestartSec, immediately reconnects)."""
+	tunnel_port = derive_vm_tunnel_port(doc.virtual_machine)
+	_run_phase_task(
+		doc,
+		server=doc.source_server,
+		script="migration-forward-up",
+		variables={
+			"VIRTUAL_MACHINE_NAME": doc.virtual_machine,
+			"ROLE": "source",
+			"TUNNEL_DEVICE": tunnel_device,
+			"TUNNEL_PORT": str(tunnel_port),
+			"VIRTUAL_MACHINE_IPV6": doc.ipv6_address_old,
+			"ROUTE_TABLE": str(route_table),
+		},
+		timeout_seconds=60,
+	)
+	_run_phase_task(
+		doc,
+		server=doc.target_server,
+		script="migration-forward-up",
+		variables={
+			"VIRTUAL_MACHINE_NAME": doc.virtual_machine,
+			"ROLE": "target",
+			"TUNNEL_DEVICE": tunnel_device,
+			"TUNNEL_PORT": str(tunnel_port),
+			"SOURCE_HOST": _server_ipv4(doc.source_server),
+			"VIRTUAL_MACHINE_IPV6": doc.ipv6_address_old,
+			"ROUTE_TABLE": str(route_table),
+		},
+		timeout_seconds=60,
+	)
 
 
 def _phase_repointing(doc) -> bool:
@@ -888,7 +943,6 @@ def collapse_forward(vm) -> None:
 	tunnel_device = derive_vm_tunnel(vm.name)
 	tunnel_port = derive_vm_tunnel_port(vm.name)
 	route_table = derive_vm_tunnel_table(vm.name)
-	forward_address = frappe.db.get_value("Server", source_server, "provider_type") == "DigitalOcean"
 	old_ipv6 = vm.ipv6_address
 
 	# 1a. Target end (the VM's current host): remove the return-route policy.
@@ -906,7 +960,10 @@ def collapse_forward(vm) -> None:
 		virtual_machine=vm.name,
 		timeout_seconds=60,
 	)
-	# 1b. Source end: remove the /128 route, nft rules, and (DO) proxy-NDP entry.
+	# 1b. Source end: remove the /128 route, nft rules, and the proxy-NDP entry.
+	#     Deassert proxy-NDP for EVERY provider (mirror of the unconditional re-assert
+	#     in _install_forward_routes) — the source answered NDP for the /128 while
+	#     forwarding, so collapse must stop it on all providers, not just DigitalOcean.
 	run_task(
 		server=source_server,
 		script="migration-forward-down",
@@ -916,7 +973,7 @@ def collapse_forward(vm) -> None:
 			"ROLE": "source",
 			"TUNNEL_DEVICE": tunnel_device,
 			"TUNNEL_PORT": str(tunnel_port),
-			"DEASSERT_PROXY_NDP": "1" if forward_address else "0",
+			"DEASSERT_PROXY_NDP": "1",
 		},
 		virtual_machine=vm.name,
 		timeout_seconds=60,

@@ -3,19 +3,26 @@
 # the VM's /128 delivery at the forward tunnel instead of its now-torn-down veth.
 #
 # By the time this runs, the source VM's unit is disabled and its ExecStopPost
-# (vm-network-down.py) has already deleted this VM's netns/veth/tap AND its
-# `<vmv6>/128 via fe80::3 dev <host_veth>` route — and, on a proxy-NDP provider,
-# its proxy-NDP entry. But the source host still holds the /64, so inbound for the
-# /128 still lands here. This re-establishes reachability onto the tunnel:
+# (vm-network-down.py) has already deleted this VM's netns/veth/tap, its
+# `<vmv6>/128 via fe80::3 dev <host_veth>` route, AND its proxy-NDP entry (that
+# teardown is unconditional, every provider). But the source host still holds the
+# /64, so inbound for the /128 still lands on this host's segment. This
+# re-establishes reachability onto the tunnel:
 #
 #   ip -6 route replace <vmv6>/128 dev <tunnel>     (atomic; no black hole)
 #   nft ... daddr <vmv6> oifname <tunnel> accept     (forward inbound to the tunnel)
 #   nft ... saddr <vmv6> iifname <tunnel> accept     (admit the reply coming back)
+#   ip -6 neigh replace proxy <vmv6> dev <uplink>    (re-answer NDP for the /128)
 #
-# On a proxy-NDP provider (DigitalOcean, forward_address=1) it ALSO re-asserts the
-# proxy-NDP entry the unit stop just removed, so DO's edge keeps delivering the
-# /128 here. On a routed-prefix provider (Scaleway) proxy-NDP is a no-op, so it is
-# skipped — the routed /64 already delivers the /128 to this host.
+# The proxy-NDP re-assert is UNCONDITIONAL — the upstream switch on EVERY provider
+# here (Scaleway Elastic Metal included) delivers a /128 to a host only because
+# that host answers Neighbor Solicitations for it; vm-network-up.py applies the
+# proxy-NDP entry unconditionally at provision, and vm-network-down.py removed it
+# at cutover. WITHOUT this re-assert the source stops answering NDP and the switch
+# black-holes ALL public ingress to the /128 (proven in the field: egress works,
+# ingress 0%). The earlier "a routed /64 needs no NDP on Scaleway" assumption was
+# wrong. `reassert_proxy_ndp` stays only as an explicit escape hatch ("0") for a
+# hypothetical purely-routed provider that genuinely answers NDP upstream itself.
 #
 # This is the point the forward becomes live and PERMANENT: nothing tears it down
 # automatically (spec/24 §2.9.4). The operator collapses it by hand later
@@ -27,7 +34,8 @@
 #   virtual_machine_name  - UUID (for logging / symmetry)
 #   virtual_machine_ipv6  - the /128 being forwarded (unchanged across the move)
 #   tunnel_device         - the mig6-<vm8> interface (already up from forward-up)
-#   reassert_proxy_ndp    - "1" on a proxy-NDP provider (DO), "0" on Scaleway
+#   reassert_proxy_ndp    - "1" (default) re-answers NDP for the /128 on the uplink;
+#                           "0" only for a provider that answers NDP upstream itself
 
 import os
 import sys
@@ -49,7 +57,7 @@ class SourceForwardInputs(TaskInputs):
 	virtual_machine_name: str
 	virtual_machine_ipv6: str
 	tunnel_device: str
-	reassert_proxy_ndp: str = "0"
+	reassert_proxy_ndp: str = "1"
 
 
 @dataclass(frozen=True)
@@ -76,8 +84,12 @@ def main() -> None:
 	_ensure_forward_rule(f"ip6 daddr {vmv6} oifname {inputs.tunnel_device} accept")
 	_ensure_forward_rule(f"ip6 saddr {vmv6} iifname {inputs.tunnel_device} accept")
 
-	# 3. Proxy-NDP re-assert (DigitalOcean only). On a routed prefix (Scaleway) this
-	#    is a no-op at the edge, so we skip it to keep the source's neigh table clean.
+	# 3. Re-answer NDP for the /128 on the uplink. Unconditional by default: the
+	#    upstream switch delivers the /128 to this host ONLY while the host answers
+	#    NDP for it (proven in the field on Scaleway — ingress was 0% until this was
+	#    re-asserted). vm-network-down removed the entry at cutover; put it back.
+	#    Idempotent (`neigh replace`). "0" is an escape hatch for a provider that
+	#    answers NDP upstream itself.
 	if inputs.reassert_proxy_ndp == "1":
 		uplink = default_route_device("-6")
 		run("sudo ip -6 neigh replace proxy {} dev {}", vmv6, uplink)

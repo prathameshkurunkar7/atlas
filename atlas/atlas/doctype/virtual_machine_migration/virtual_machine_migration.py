@@ -96,10 +96,16 @@ class VirtualMachineMigration(Document):
 		address to the target — we NEVER move the /64); when not, the migration takes
 		the change-address path (a new /128 on the target + a proxy re-point).
 
-		forward_address distinguishes the sub-mechanism: 1 on a proxy-NDP provider
-		(DigitalOcean), where the source must re-assert proxy-NDP at cutover; 0 on a
-		routed-prefix provider (Scaleway), where NDP is a no-op. Both hosts share a
-		provider (pre-flight enforces it), so one provider instance answers for both.
+		forward_address records whether the source is a proxy-NDP-PRIMARY provider
+		(DigitalOcean). NOTE: it no longer GATES the cutover proxy-NDP re-assert — that
+		is now UNCONDITIONAL for every keep-address provider (see
+		migration._install_forward_routes). The field is kept as provider metadata: the
+		upstream switch on EVERY provider here delivers a /128 only to the host that
+		answers NDP for it (vm-network-up applies proxy-NDP unconditionally at
+		provision), so the source must always re-answer NDP after cutover — the earlier
+		"Scaleway routed /64 needs no NDP" assumption was wrong in the field (public
+		ingress 0% until proxy-NDP was re-asserted). Both hosts share a provider
+		(pre-flight enforces it), so one provider instance answers for both.
 
 		Computed once at insert (the fields are set_only_once): a migration's address
 		scheme is fixed for its lifetime. A caller that sets flags.keep_address_forced
@@ -109,8 +115,6 @@ class VirtualMachineMigration(Document):
 		from atlas.atlas.migration import _will_keep_address
 
 		self.keep_address = 1 if _will_keep_address(self.source_server, self.target_server) else 0
-		# The routed-prefix vs proxy-NDP split is the only provider-specific bit left.
-		# Scaleway (routed /64) needs no NDP re-assert; DigitalOcean (proxy-NDP) does.
 		provider_type = frappe.db.get_value("Server", self.source_server, "provider_type")
 		self.forward_address = 1 if (self.keep_address and provider_type == "DigitalOcean") else 0
 

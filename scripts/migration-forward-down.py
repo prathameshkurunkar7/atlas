@@ -20,8 +20,14 @@
 #   tunnel_device         - the mig6-<vm8> interface
 #   tunnel_port           - the socat carrier's TCP port (to kill the right unit)
 #   route_table           - the per-VM return table id (target role only)
-#   deassert_proxy_ndp    - "1" on a proxy-NDP provider (DO), "0" on Scaleway
-#                           (source role only)
+#   deassert_proxy_ndp    - "1" (default) removes the /128's proxy-NDP entry on the
+#                           uplink; "0" only for a provider that answers NDP upstream
+#                           itself (source role only). Mirror of the UNCONDITIONAL
+#                           re-assert in migration-source-forward.py — the source
+#                           answered NDP for the /128 while forwarding (every provider,
+#                           Scaleway EM included — spec/24 §2.0), so collapse must stop
+#                           it on every provider. The earlier "Scaleway routed /64 needs
+#                           no NDP" assumption was disproven in the field.
 
 import os
 import sys
@@ -46,7 +52,7 @@ class ForwardDownInputs(TaskInputs):
 	tunnel_device: str
 	tunnel_port: int
 	route_table: int = 0
-	deassert_proxy_ndp: str = "0"
+	deassert_proxy_ndp: str = "1"
 
 
 @dataclass(frozen=True)
@@ -79,7 +85,8 @@ def main() -> None:
 
 def _collapse_source(inputs: ForwardDownInputs, vmv6: str) -> None:
 	"""Remove the source-forward state: the /128-into-tunnel route, the two nft
-	forward rules, and (DO only) the proxy-NDP entry."""
+	forward rules, and the proxy-NDP entry (every provider by default — the source
+	was answering NDP for the /128 while forwarding; spec/24 §2.0)."""
 	run("sudo ip -6 route del {} dev {}", f"{vmv6}/128", inputs.tunnel_device, check=False)
 
 	# Delete every forward-chain rule mentioning this VM's /128, by handle — the

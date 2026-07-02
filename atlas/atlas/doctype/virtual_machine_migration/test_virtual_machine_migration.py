@@ -622,6 +622,44 @@ class TestMigrationPhaseMachine(IntegrationTestCase):
 		self.assertTrue(row.forward_active)
 		self.assertTrue(row.tunnel_device.startswith("mig6-"))
 
+	def test_cutover_reasserts_proxy_ndp_even_when_not_forward_address(self) -> None:
+		"""Regression: the source must re-assert proxy-NDP at cutover on EVERY provider,
+		not just DigitalOcean. With forward_address=0 (the routed-prefix / Scaleway case)
+		the old code passed REASSERT_PROXY_NDP=0, so the source stopped answering NDP and
+		the switch black-holed ALL public inbound to the kept /128 (egress still worked —
+		the field symptom: 'can't ping from the controller'). Assert the source-forward
+		call carries REASSERT_PROXY_NDP=1 regardless of forward_address."""
+		vm = self._vm()
+		row = self._row(vm, keep_address=1)
+		# Pin the routed-prefix case: keep-address but NOT a proxy-NDP-primary provider.
+		row.db_set("forward_address", 0)
+
+		source_forward_vars: dict = {}
+
+		def _fake_run_task(*, script, variables, server, virtual_machine, timeout_seconds):
+			if script == "migration-source-forward":
+				source_forward_vars.update(variables)
+			if script == "migration-export-source":
+				return fake_task(
+					stdout='ATLAS_RESULT={"nbd_port": 10001, "nbd_pid": 4242, '
+					'"root_size_bytes": 1, "data_size_bytes": 0}'
+				)
+			if script == "migration-poll-hydration":
+				return fake_task(stdout='ATLAS_RESULT={"hydration_percent": 100}')
+			return fake_task(stdout="ok")
+
+		from atlas.atlas import proxy as proxy_module
+
+		with (
+			patch.object(migration_module, "run_task", side_effect=_fake_run_task),
+			patch.object(proxy_module, "reconcile_proxies", return_value=[]),
+		):
+			for _ in range(8):
+				row.reload()
+				migration_module.advance_migration(row)
+
+		self.assertEqual(source_forward_vars.get("REASSERT_PROXY_NDP"), "1")
+
 	def test_hydrating_rebuilds_clone_when_source_client_dies(self) -> None:
 		"""A dead source nbd client (poll reports source_healthy=false) is self-healed:
 		Hydrating re-runs the clone-prepare step to rebuild the stack, resets the
