@@ -52,6 +52,32 @@ MAX_OPEN_FILES = 1024
 # uplink and is never visible on the wire — it only needs to be unique per host.
 IPV4_EGRESS_SUPERNET = "100.64.0.0/16"
 
+# Migration tunnel (spec/19-vm-migration.md §2.9, keep-address path). When a VM
+# migrates keeping its /128, the source host keeps holding the /64 that /128 is
+# carved from, so it keeps receiving the VM's inbound traffic and forwards it to
+# the target over a per-VM point-to-point tunnel; the target policy-routes the
+# guest's replies back up the same tunnel so egress is always sourced from the
+# box that legitimately owns the range (§2.0 — the switch drops any other
+# source). The tunnel is a `tun` device whose frames socat bridges to a plain TCP
+# stream between the two hosts (unencrypted, matching the stage-1 NBD transport;
+# a secure carrier is a deferred follow-up). Everything is a pure function of the
+# VM's UUID, like derive_tap — reconstructible from the row with no allocator.
+
+# First localhost TCP port for a migration tunnel's socat carrier. Kept clear of
+# the NBD-export port window (nbd_port: 10000-14999) so a VM being migrated can
+# run both at once without a collision.
+MIGRATION_TUNNEL_PORT_BASE = 15000
+MIGRATION_TUNNEL_PORT_SPAN = 5000
+
+# The base for a migration tunnel's dedicated route-table id (§2.9.3). The
+# target adds one `ip -6 rule from <vmv6> lookup <table>` per migrated VM, whose
+# only route is `default dev <tunnel>` — this is what forces the guest's replies
+# up the tunnel instead of out the target's own (spoof-dropped) uplink. Table 0
+# is the unspec table and low ids are reserved (255 local, 254 main, 253
+# default), so we sit the per-VM tables well clear of them.
+MIGRATION_TABLE_BASE = 20000
+MIGRATION_TABLE_SPAN = 40000
+
 # WireGuard VPN broker (spec/19-vpn-broker.md). Each tunnel terminates on the
 # host with its own wg interface; a per-server slot index gives each one a UDP
 # listen port and a private overlay link, in the spirit of allocate_ipv6 /
@@ -292,6 +318,35 @@ def derive_ipv4_link(ipv6_address: str) -> tuple[str, str]:
 		f"{hosts[0]}/{link.prefixlen}",
 		f"{hosts[1]}/{link.prefixlen}",
 	)
+
+
+def derive_vm_tunnel(virtual_machine_name: str) -> str:
+	"""mig6-<first 8 hex of the VM's UUID>. Length 13, IFNAMSIZ-safe (`mig6-` (5)
+	+ 8 = 13). The migration tunnel's `tun` device name (spec/19 §2.9.1), keyed to
+	the VM — one device per migrated VM, brought up at cutover and left up while
+	the /128 is forwarded. Both hosts derive it identically, so teardown and
+	lost-task re-entry need only the UUID, not stored state. Distinct from the
+	`atlas-`/`wg-` device families so the three never collide."""
+	hex_only = uuid.UUID(virtual_machine_name).hex
+	return f"mig6-{hex_only[:8]}"
+
+
+def derive_vm_tunnel_port(virtual_machine_name: str) -> int:
+	"""A stable per-VM localhost TCP port for the migration tunnel's socat carrier,
+	derived like nbd_port but in a non-overlapping window (§2.9.1) so a VM can run
+	its NBD export and its forward tunnel at once without a collision."""
+	index = int(uuid.UUID(virtual_machine_name).hex[:4], 16) % MIGRATION_TUNNEL_PORT_SPAN
+	return MIGRATION_TUNNEL_PORT_BASE + index
+
+
+def derive_vm_tunnel_table(virtual_machine_name: str) -> int:
+	"""A stable per-VM route-table id for the migration return route (§2.9.3). One
+	table per migrated VM holds a single `default dev <tunnel>` route; an
+	`ip -6 rule from <vmv6>` selects it, forcing the guest's replies up the tunnel.
+	Derived from the UUID so both the install (target-receive) and the teardown
+	(collapse) name the same table with no stored state."""
+	index = int(uuid.UUID(virtual_machine_name).hex[:8], 16) % MIGRATION_TABLE_SPAN
+	return MIGRATION_TABLE_BASE + index
 
 
 def derive_tunnel_interface(tunnel_name: str) -> str:
