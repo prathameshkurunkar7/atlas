@@ -316,7 +316,27 @@ def _phase_exporting_snapshot(doc) -> bool:
 def _phase_target_preparing(doc) -> bool:
 	"""Target: pre-flight (modules/image/pool), create fresh thin LVs, connect the
 	nbd client to the source over plain TCP, build the dm-clone device. Resume key:
-	the script skips any step whose artifact already exists."""
+	the script skips any step whose artifact already exists.
+
+	FIRST, if the VM's base image is LOCAL (snapshot-promoted, un-syncable — spec/19
+	§5.1), ship it from the source to the target over NBD. That ship is a multi-GB,
+	multi-tick copy, so this phase re-enters (returns False) until the base is fully
+	received. A syncable/already-present base is a one-tick no-op."""
+	if not _ensure_base_on_target(doc):
+		return False  # base still shipping; re-enter next tick (progress on the row)
+
+	_run_clone_prepare(doc)
+	if doc.keep_address:
+		_bring_up_forward_tunnel(doc)
+	return True
+
+
+def _run_clone_prepare(doc) -> None:
+	"""Run the target `prepare` step: create the thin LV(s), connect the nbd client to
+	the source, and build the dm-clone. Idempotent and self-repairing — the script
+	skips healthy artifacts and rebuilds a wedged one (a dm-clone whose source nbd
+	client has died). Shared by TargetPreparing (first build) and Hydrating (rebuild
+	on a dropped NBD link)."""
 	_run_phase_task(
 		doc,
 		server=doc.target_server,
@@ -339,8 +359,115 @@ def _phase_target_preparing(doc) -> bool:
 		},
 		timeout_seconds=600,
 	)
-	if doc.keep_address:
-		_bring_up_forward_tunnel(doc)
+
+
+def _rebuild_clone_stack(doc) -> None:
+	"""Re-establish a dm-clone whose source nbd client died mid-hydration. The prepare
+	step detects the wedged stack (dead client under a live clone), removes the clone
+	to free the nbd device, re-dials the client, and rebuilds the clone — the only way
+	to recover, since the clone otherwise pins the dead device open (spec/19)."""
+	_run_clone_prepare(doc)
+
+
+def _ensure_base_on_target(doc) -> bool:
+	"""Ship the VM's base image to the target if it is LOCAL and not already there.
+	Returns True once the base is ready on the target (present, or ship complete),
+	False while the multi-GB copy is still hydrating (so TargetPreparing re-enters).
+
+	Only local (snapshot-promoted) images need this: a synced image is already on
+	the target (or fails pre-flight early), and clone-target's own pre-flight will
+	confirm presence. So for a non-local image this is a cheap DB-only no-op.
+
+	Mechanism (spec/19 §5.1), mirroring the VM-disk ship exactly:
+	  1. Source exports the read-only base LV + a tar of the image dir over NBD
+	     (migration-export-base) — on the disk export's port +2 / +3.
+	  2. Target hydrates a local base LV via dm-clone + extracts the image dir
+	     (migration-receive-base PHASE=prepare), then we poll hydration to 100%
+	     (migration-poll-hydration on the base clone device), then collapse
+	     (migration-receive-base PHASE=finalize).
+	The per-tick percent lands on base_ship_percent / progress_percent so the copy
+	is visible throughout."""
+	image = _vm_field(doc, "image")
+	if not _image_is_local(image):
+		return True  # syncable/standard image — clone-target handles presence itself.
+	if doc.base_ship_state == "Done":
+		return True  # already shipped in a prior tick.
+
+	base_port = doc.nbd_port + 2  # disk root=port, data=port+1, base=port+2, meta=port+3
+	source_title, target_title = _server_title(doc.source_server), _server_title(doc.target_server)
+
+	# 1. Source export (idempotent — returns the running pids). Record the base size
+	#    so the target's dest LV matches, and mark the ship in flight.
+	if doc.base_ship_state != "Shipping":
+		_progress(doc, f"Shipping base image {image} from {source_title} — starting export.", percent=0)
+		doc.db_set({"base_ship_state": "Shipping", "base_ship_percent": 0})
+	export = parse_result(
+		_run_phase_task(
+			doc,
+			server=doc.source_server,
+			script="migration-export-base",
+			variables={
+				"IMAGE_NAME": image,
+				"NBD_PORT": str(base_port),
+				"BIND_ADDRESS": _server_ipv4(doc.source_server),
+			},
+			timeout_seconds=120,
+		).stdout
+	)
+	base_disk_gb = _bytes_to_gib_ceil(int(export["base_size_bytes"]))
+
+	# 2. Target prepare: create the dest LV, dm-clone read-through, extract image dir.
+	_run_phase_task(
+		doc,
+		server=doc.target_server,
+		script="migration-receive-base",
+		variables={
+			"IMAGE_NAME": image,
+			"DISK_GB": str(base_disk_gb),
+			"SOURCE_HOST": _server_ipv4(doc.source_server),
+			"NBD_PORT": str(base_port),
+			# base = base_slot+2, image-dir tar = base_slot+3 (root/data are +0/+1).
+			"NBD_BASE_SLOT": str(nbd_base_slot(doc.virtual_machine)),
+			"PHASE": "prepare",
+		},
+		timeout_seconds=300,
+	)
+
+	# 3. Poll hydration of the base clone device (same script as the VM disk, keyed
+	#    on the base clone name). Re-enter until 100%.
+	percent = int(
+		parse_result(
+			_run_phase_task(
+				doc,
+				server=doc.target_server,
+				script="migration-poll-hydration",
+				variables={"CLONE_DEVICE": f"atlas-base-{image}-clone"},
+				timeout_seconds=60,
+			).stdout
+		)["hydration_percent"]
+	)
+	doc.db_set("base_ship_percent", percent)
+	_progress(doc, f"Shipping base image {image} to {target_title} — {percent}% copied.", percent=percent)
+	if percent < 100:
+		return False  # still copying — TargetPreparing re-enters next tick.
+
+	# 4. Collapse the base clone to a plain read-only local base image.
+	_run_phase_task(
+		doc,
+		server=doc.target_server,
+		script="migration-receive-base",
+		variables={
+			"IMAGE_NAME": image,
+			"DISK_GB": str(base_disk_gb),
+			"SOURCE_HOST": _server_ipv4(doc.source_server),
+			"NBD_PORT": str(base_port),
+			"NBD_BASE_SLOT": str(nbd_base_slot(doc.virtual_machine)),
+			"PHASE": "finalize",
+		},
+		timeout_seconds=120,
+	)
+	doc.db_set({"base_ship_state": "Done", "base_ship_percent": 100})
+	_progress(doc, f"Base image {image} shipped to {target_title}; preparing the disk clone.", percent=-1)
 	return True
 
 
@@ -415,6 +542,27 @@ def _phase_hydrating(doc) -> bool:
 		timeout_seconds=60,
 	)
 	result = parse_result(task.stdout)
+
+	# Self-heal a dead source: if the nbd client backing the clone has died (reads
+	# return 0 bytes, hydration frozen), the copy can't progress in place — the clone
+	# pins the nbd device open, so it must be torn down and rebuilt. Re-run the
+	# TargetPreparing prepare step, which now detects the wedged stack, removes the
+	# clone, re-dials the client, and recreates the clone; hydration resumes (from 0)
+	# on the next tick. We do NOT count this toward the stall guard — it is a
+	# recoverable transport failure, not a genuinely stuck copy.
+	if not result.get("source_healthy", True):
+		_progress(
+			doc,
+			f"NBD link to {_server_title(doc.source_server)} dropped — rebuilding the "
+			f"disk clone on {_server_title(doc.target_server)} and resuming hydration.",
+			percent=doc.hydration_percent or 0,
+		)
+		_rebuild_clone_stack(doc)
+		# The rebuilt clone hydrates from 0; reset the tracked percent + stall counter
+		# so the next poll measures the fresh copy, not the stale 58%.
+		doc.db_set({"hydration_percent": 0, "hydration_stall_ticks": 0})
+		return False  # re-enter next tick; the rebuilt clone hydrates afresh
+
 	percent = int(result["hydration_percent"])
 	stalled = percent == (doc.hydration_percent or 0)
 	doc.db_set({"hydration_percent": percent, "hydration_last_polled": frappe.utils.now_datetime()})
@@ -832,6 +980,18 @@ def _fail(name: str, message: str) -> None:
 
 def _vm_field(doc, field: str):
 	return frappe.db.get_value("Virtual Machine", doc.virtual_machine, field)
+
+
+def _image_is_local(image_name: str) -> bool:
+	"""True if the VM's base image was promoted from a snapshot (`is_local`) and so
+	has no rootfs URL to sync — it lives only on the host it was promoted on, and a
+	migration must SHIP it to the target (spec/19 §5.1) rather than assume sync.
+
+	`is_local` is a computed property on Virtual Machine Image (no rootfs URL), not a
+	stored column, so we replicate its one-line definition off the DB field to avoid
+	loading the whole doc every tick."""
+	rootfs_url = frappe.db.get_value("Virtual Machine Image", image_name, "rootfs_url")
+	return not (rootfs_url or "").strip()
 
 
 def _bytes_to_gib_ceil(size_bytes: int) -> int:

@@ -30,6 +30,8 @@
     "nbd_pid",
     "root_disk_bytes",
     "data_disk_bytes",
+    "base_ship_state",
+    "base_ship_percent",
     "column_break_transfer",
     "hydration_percent",
     "hydration_last_polled",
@@ -211,6 +213,22 @@
       "fieldname": "data_disk_bytes",
       "fieldtype": "Long Int",
       "label": "Data Disk Bytes",
+      "read_only": 1
+    },
+    {
+      "description": "Local-image path only (spec/19 §5.1): tracks shipping the VM's un-syncable base image to the target during TargetPreparing. Empty when the base was already present (a synced image, or a re-entry after the ship finished).",
+      "fieldname": "base_ship_state",
+      "fieldtype": "Select",
+      "label": "Base Ship State",
+      "options": "\nShipping\nDone",
+      "read_only": 1
+    },
+    {
+      "default": "0",
+      "description": "Percent of the base-image copy complete (local-image path only).",
+      "fieldname": "base_ship_percent",
+      "fieldtype": "Int",
+      "label": "Base Ship %",
       "read_only": 1
     },
     {

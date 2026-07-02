@@ -593,6 +593,247 @@ class TestMigrationPhaseMachine(IntegrationTestCase):
 		self.assertTrue(row.forward_active)
 		self.assertTrue(row.tunnel_device.startswith("mig6-"))
 
+	def test_hydrating_rebuilds_clone_when_source_client_dies(self) -> None:
+		"""A dead source nbd client (poll reports source_healthy=false) is self-healed:
+		Hydrating re-runs the clone-prepare step to rebuild the stack, resets the
+		tracked percent to 0 (the rebuilt clone hydrates afresh), does NOT advance, and
+		does NOT count the drop toward the stall guard (it's recoverable, not stuck)."""
+		vm = self._vm()
+		row = self._row(vm, keep_address=0)
+
+		poll_healthy = {"value": False}  # first poll: client dead
+		scripts_seen: list[str] = []
+
+		def _fake_run_task(*, script, variables, server, virtual_machine, timeout_seconds):
+			scripts_seen.append(script)
+			if script == "migration-export-source":
+				return fake_task(
+					stdout='ATLAS_RESULT={"nbd_port": 10001, "nbd_pid": 4242, '
+					'"root_size_bytes": 1, "data_size_bytes": 0}'
+				)
+			if script == "migration-poll-hydration":
+				healthy = "true" if poll_healthy["value"] else "false"
+				pct = 40 if poll_healthy["value"] else 0
+				return fake_task(
+					stdout=f'ATLAS_RESULT={{"hydration_percent": {pct}, "source_healthy": {healthy}}}'
+				)
+			return fake_task(stdout="ok")
+
+		with patch.object(migration_module, "run_task", side_effect=_fake_run_task):
+			# Drive to Hydrating (Pending → ExportingSnapshot → TargetPreparing →
+			# InjectingIdentity → Hydrating).
+			for _ in range(4):
+				row.reload()
+				migration_module.advance_migration(row)
+			row.reload()
+			self.assertEqual(row.status, "Hydrating")
+			# Pretend hydration got partway before the client died.
+			row.db_set({"hydration_percent": 58, "hydration_stall_ticks": 3})
+
+			# The unhealthy poll: rebuild fires, no advance, progress + stall reset.
+			scripts_seen.clear()
+			row.reload()
+			self.assertFalse(migration_module.advance_migration(row))
+			row.reload()
+			self.assertEqual(row.status, "Hydrating")  # held, not failed
+			self.assertIn("migration-clone-target", scripts_seen)  # prepare re-ran
+			self.assertEqual(row.hydration_percent, 0)  # reset for the fresh clone
+			self.assertEqual(row.hydration_stall_ticks, 0)  # drop is not a stall
+
+			# Client recovers: normal polling resumes and advances at 100%.
+			poll_healthy["value"] = True
+			row.reload()
+			migration_module.advance_migration(row)
+			row.reload()
+			self.assertEqual(row.hydration_percent, 40)
+
+
+class TestLocalBaseImageShip(IntegrationTestCase):
+	"""spec/19 §5.1: a VM on a LOCAL (snapshot-promoted, un-syncable) base image
+	must ship that base to the target during TargetPreparing. Drives the phase
+	machine with run_task mocked, proving the base-ship sub-phase runs the right
+	host scripts, re-enters TargetPreparing until the base is 100% hydrated, records
+	progress, and only then proceeds to the disk clone."""
+
+	def setUp(self) -> None:
+		self.source = _source_server()
+		self.target = _target_server()
+		# A LOCAL image: no URLs, so is_local is True and sync-image can't place it.
+		self.image = make_image(
+			"mig-local-image",
+			kernel_url="",
+			rootfs_url="",
+			kernel_sha256="",
+			rootfs_sha256="",
+		).name
+		for name in frappe.get_all("Virtual Machine Migration", pluck="name"):
+			frappe.delete_doc("Virtual Machine Migration", name, force=1, ignore_permissions=True)
+		for name in frappe.get_all("Virtual Machine", pluck="name"):
+			frappe.delete_doc("Virtual Machine", name, force=1, ignore_permissions=True)
+
+	def _row(self):
+		vm = make_virtual_machine(self.source, self.image, status="Stopped")
+		doc = frappe.get_doc(
+			{
+				"doctype": "Virtual Machine Migration",
+				"virtual_machine": vm.name,
+				"target_server": self.target,
+			}
+		)
+		doc.keep_address = 0
+		doc.forward_address = 0
+		doc.flags.keep_address_forced = True
+		return doc.insert(ignore_permissions=True), vm
+
+	def test_image_is_local_detects_missing_rootfs_url(self) -> None:
+		self.assertTrue(migration_module._image_is_local(self.image))
+		syncable = make_image("mig-syncable-image").name
+		self.assertFalse(migration_module._image_is_local(syncable))
+
+	def test_local_base_ships_before_disk_clone(self) -> None:
+		row, _vm = self._row()
+
+		scripts_seen: list[str] = []
+		# The base clone hydrates over TWO ticks (40% then 100%) to prove the phase
+		# re-enters; the VM DISK poll always reports 100 so the later Hydrating phase
+		# doesn't add ticks we have to count. We tell them apart by clone_device.
+		base_polls = iter([40, 100])
+
+		def _fake_run_task(*, script, variables, server, virtual_machine, timeout_seconds):
+			scripts_seen.append(script)
+			if script == "migration-export-source":
+				return fake_task(
+					stdout='ATLAS_RESULT={"nbd_port": 10001, "nbd_pid": 4242, '
+					'"root_size_bytes": 1, "data_size_bytes": 0}'
+				)
+			if script == "migration-export-base":
+				return fake_task(
+					stdout='ATLAS_RESULT={"nbd_port": 10003, "nbd_pid": 5252, '
+					'"base_size_bytes": 2147483649, "meta_port": 10004, '
+					'"meta_pid": 5253, "meta_size_bytes": 4096}'
+				)
+			if script == "migration-poll-hydration":
+				# Base clone device vs the VM disk: the base ship passes clone_device.
+				if variables.get("CLONE_DEVICE"):
+					return fake_task(stdout=f'ATLAS_RESULT={{"hydration_percent": {next(base_polls)}}}')
+				return fake_task(stdout='ATLAS_RESULT={"hydration_percent": 100}')
+			return fake_task(stdout="ok")
+
+		from atlas.atlas import proxy as proxy_module
+
+		with (
+			patch.object(migration_module, "run_task", side_effect=_fake_run_task),
+			patch.object(proxy_module, "reconcile_proxies", return_value=[]),
+		):
+			# Advance to TargetPreparing.
+			for _ in range(2):
+				row.reload()
+				migration_module.advance_migration(row)
+			row.reload()
+			self.assertEqual(row.status, "TargetPreparing")
+
+			# First TargetPreparing tick: base ship starts, hydrates to 40% — the phase
+			# does NOT advance (still shipping), records percent, and has NOT yet run
+			# the disk clone.
+			migration_module.advance_migration(row)
+			row.reload()
+			self.assertEqual(row.status, "TargetPreparing")
+			self.assertEqual(row.base_ship_state, "Shipping")
+			self.assertEqual(row.base_ship_percent, 40)
+			self.assertEqual(row.progress_percent, 40)
+			self.assertIn("migration-export-base", scripts_seen)
+			self.assertIn("migration-receive-base", scripts_seen)
+			self.assertNotIn("migration-clone-target", scripts_seen)
+
+			# Second tick: base hits 100%, finalizes, and the SAME tick proceeds to the
+			# disk clone and advances the phase.
+			migration_module.advance_migration(row)
+			row.reload()
+			self.assertEqual(row.base_ship_state, "Done")
+			self.assertIn("migration-clone-target", scripts_seen)
+			self.assertEqual(row.status, "InjectingIdentity")
+
+		# The disk clone came only AFTER the base ship (both prepare + finalize ran).
+		self.assertGreaterEqual(scripts_seen.count("migration-receive-base"), 2)
+		self.assertLess(
+			scripts_seen.index("migration-receive-base"),
+			scripts_seen.index("migration-clone-target"),
+		)
+
+	def test_progress_detail_is_stamped_before_each_phase(self) -> None:
+		# spec/19: progress must be visible at all points — advance_migration stamps a
+		# live progress_detail line naming the host BEFORE the (possibly slow) phase
+		# task runs, and the disk hydration writes a finer line + percent per tick.
+		row, _vm = self._row()
+
+		def _fake_run_task(*, script, variables, server, virtual_machine, timeout_seconds):
+			if script == "migration-export-source":
+				return fake_task(
+					stdout='ATLAS_RESULT={"nbd_port": 10001, "nbd_pid": 4242, '
+					'"root_size_bytes": 1, "data_size_bytes": 0}'
+				)
+			if script == "migration-export-base":
+				return fake_task(
+					stdout='ATLAS_RESULT={"nbd_port": 10003, "nbd_pid": 5252, '
+					'"base_size_bytes": 1, "meta_port": 10004, "meta_pid": 5253, '
+					'"meta_size_bytes": 4096}'
+				)
+			if script == "migration-poll-hydration":
+				return fake_task(stdout='ATLAS_RESULT={"hydration_percent": 100}')
+			return fake_task(stdout="ok")
+
+		with patch.object(migration_module, "run_task", side_effect=_fake_run_task):
+			# Pending → the line names the source and the stop.
+			migration_module.advance_migration(row)
+			row.reload()
+			self.assertTrue(row.progress_detail)
+			self.assertIn("mig-source", row.progress_detail)
+
+	def test_syncable_image_skips_the_base_ship(self) -> None:
+		# A normal (syncable) image must NOT trigger any base-ship scripts — that path
+		# is handled by clone-target's own presence pre-flight.
+		vm = make_virtual_machine(self.source, make_image("mig-syncable-image-2").name, status="Stopped")
+		doc = frappe.get_doc(
+			{
+				"doctype": "Virtual Machine Migration",
+				"virtual_machine": vm.name,
+				"target_server": self.target,
+			}
+		)
+		doc.keep_address = 0
+		doc.forward_address = 0
+		doc.flags.keep_address_forced = True
+		row = doc.insert(ignore_permissions=True)
+
+		scripts_seen: list[str] = []
+
+		def _fake_run_task(*, script, variables, server, virtual_machine, timeout_seconds):
+			scripts_seen.append(script)
+			if script == "migration-export-source":
+				return fake_task(
+					stdout='ATLAS_RESULT={"nbd_port": 10001, "nbd_pid": 4242, '
+					'"root_size_bytes": 1, "data_size_bytes": 0}'
+				)
+			if script == "migration-poll-hydration":
+				return fake_task(stdout='ATLAS_RESULT={"hydration_percent": 100}')
+			return fake_task(stdout="ok")
+
+		from atlas.atlas import proxy as proxy_module
+
+		with (
+			patch.object(migration_module, "run_task", side_effect=_fake_run_task),
+			patch.object(proxy_module, "reconcile_proxies", return_value=[]),
+		):
+			for _ in range(8):
+				row.reload()
+				migration_module.advance_migration(row)
+			row.reload()
+
+		self.assertEqual(row.status, "Done")
+		self.assertNotIn("migration-export-base", scripts_seen)
+		self.assertNotIn("migration-receive-base", scripts_seen)
+		self.assertEqual(row.base_ship_state or "", "")
+
 
 class TestCollapseForward(IntegrationTestCase):
 	"""The operator-initiated Collapse-forward (spec/19 §2.9.5): tear the tunnel

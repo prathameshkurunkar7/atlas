@@ -99,15 +99,30 @@ def main() -> None:
 		data_dest = pool.data_disk(uuid)
 		pool.create_thin(data_dest, inputs.data_disk_gb)
 
-	# 4. nbd clients straight to the source over plain TCP (no tunnel this stage).
-	#    Per-VM slot block on the target: root = base+0, data = base+1, so two
-	#    migrations to one target never share an nbd device.
-	root_nbd = _ensure_nbd_client(inputs.source_host, inputs.nbd_port, slot=inputs.nbd_base_slot)
+	# 4. Repair a wedged stack before (re)building it. A dm-clone whose source nbd
+	#    client has DIED reads 0 bytes and freezes hydration; the fix is to rebuild
+	#    the stack, but the clone pins the nbd device open, so the clone must come
+	#    down FIRST — only then can the dead client be disconnected and re-dialed.
+	_drop_clone_if_source_dead(uuid, inputs.nbd_base_slot)
+	if data_dest is not None:
+		_drop_clone_if_source_dead(uuid + "-data", inputs.nbd_base_slot + 1)
+
+	# 5. nbd clients straight to the source over plain TCP (no tunnel this stage).
+	root_nbd = _ensure_nbd_client(
+		inputs.source_host, inputs.nbd_port, slot=inputs.nbd_base_slot, expected_bytes=dest.size_bytes
+	)
 	data_nbd = None
 	if data_dest is not None:
-		data_nbd = _ensure_nbd_client(inputs.source_host, inputs.nbd_port + 1, slot=inputs.nbd_base_slot + 1)
+		data_nbd = _ensure_nbd_client(
+			inputs.source_host,
+			inputs.nbd_port + 1,
+			slot=inputs.nbd_base_slot + 1,
+			expected_bytes=data_dest.size_bytes,
+		)
 
-	# 5. dm-clone device(s). Idempotent: skip if the mapper device already exists.
+	# 6. dm-clone device(s). Idempotent: skip if the mapper device already exists
+	#    (a healthy one was left alone in step 4; a wedged one was removed and is
+	#    rebuilt here onto the freshly-reconnected client).
 	_ensure_dm_clone(pool, uuid, dest, root_nbd)
 	if data_dest is not None:
 		_ensure_dm_clone(pool, uuid + "-data", data_dest, data_nbd)
@@ -115,15 +130,75 @@ def main() -> None:
 	print(f"Prepared dm-clone for {uuid} reading through {inputs.source_host}:{inputs.nbd_port}.")
 
 
-def _ensure_nbd_client(host: str, port: int, slot: int) -> str:
-	"""Attach /dev/nbd<slot> to the source export. Idempotent: if already connected,
-	return it. Returns the /dev/nbdN path used as the dm-clone source."""
+def _ensure_nbd_client(host: str, port: int, slot: int, expected_bytes: int = 0) -> str:
+	"""Attach /dev/nbd<slot> to the source export. Returns the /dev/nbdN path used as
+	the dm-clone source.
+
+	Idempotent, health-checked AND size-verified: a slot is trusted only when its
+	client is ALIVE and its size matches `expected_bytes` (the source disk's size).
+
+	- LIVENESS: `nbd-client -check` lies — it reports "connected" off the kernel's
+	  stale binding even after the client PROCESS has died (seen on a real f1→f2
+	  migration 2026-07-02: dead pid, -check exit 0, every read 0 bytes, dm-clone
+	  frozen). So we read the true owner from /sys/block/nbdN/pid and confirm that
+	  process still exists; a dead owner is a wedged device we must re-dial.
+	- SIZE: a stale/wrong connection (a prior migration's leftover) has the wrong
+	  size, and a dm-clone whose source is smaller than the dest fails deep in
+	  dmsetup. `expected_bytes=0` skips this check (caller doesn't know the size).
+
+	On either failure we disconnect and reconnect to the intended export. Note the
+	disconnect only succeeds if nothing is stacked on the device — a caller repairing
+	a wedged client under a live dm-clone must remove that clone FIRST (see
+	migration-poll-hydration's recover step)."""
 	device = f"/dev/nbd{slot}"
-	if run_ok("sudo nbd-client -check {}", device):
-		return device
+	if _nbd_client_alive(slot):
+		if expected_bytes and _nbd_size_bytes(device) == expected_bytes:
+			return device
+		# Wrong export (or unknown size): drop it and reconnect to the intended one.
+		run("sudo nbd-client -d {}", device, check=False)
+	else:
+		# Dead/stale binding: -d clears the kernel's zombie owner so the reconnect
+		# below can take the slot. Harmless if already clear.
+		run("sudo nbd-client -d {}", device, check=False)
 	# -N "" default export; -persist so a transient blip re-dials rather than dropping.
 	run("sudo nbd-client -N {} {} {} {} -persist", "", host, str(port), device)
 	return device
+
+
+def _drop_clone_if_source_dead(key: str, slot: int) -> None:
+	"""Tear down a dm-clone ONLY when its source nbd client has died — the wedged
+	state that freezes hydration (source reads return 0 bytes). Removing it frees the
+	nbd device so `_ensure_nbd_client` can re-dial and `_ensure_dm_clone` can rebuild.
+
+	A HEALTHY clone (live client) is left untouched — this is idempotent and must not
+	discard good hydration progress. A dead client under a live clone can't be fixed
+	any other way: the clone pins the nbd device open, so the client can't be
+	disconnected until the clone comes down (proven on a real f1→f2 migration
+	2026-07-02). The rebuilt clone re-hydrates from 0 — correctness over speed."""
+	name = CLONE_DEV.format(key=key)
+	if not run_ok("sudo dmsetup info {}", name):
+		return  # no clone yet — nothing wedged
+	if _nbd_client_alive(slot):
+		return  # source client alive — healthy, leave it
+	run("sudo dmsetup remove {}", name, check=False)
+
+
+def _nbd_client_alive(slot: int) -> bool:
+	"""Whether /dev/nbd<slot> has a LIVE client process. Reads the owning pid the
+	kernel records in /sys/block/nbd<slot>/pid and checks the process still exists —
+	the reliable signal `nbd-client -check` fails to give (it trusts a stale binding
+	whose process has died)."""
+	pid = run("cat /sys/block/nbd{}/pid", str(slot), check=False).strip()
+	if not pid.isdigit():
+		return False  # no owner recorded → not connected
+	# A live client's pid has a /proc entry; a dead one's does not.
+	return run_ok("test -d /proc/{}", pid)
+
+
+def _nbd_size_bytes(device: str) -> int:
+	"""Byte size of a connected nbd device (0 if it can't be read)."""
+	out = run("sudo blockdev --getsize64 {}", device, check=False).strip()
+	return int(out) if out.isdigit() else 0
 
 
 def _ensure_dm_clone(pool: "ThinPool", key: str, dest, source_device: str) -> None:

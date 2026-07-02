@@ -808,8 +808,14 @@ the point of no return.
   is dropped);
 - the base image is present on the **target** (checked on-host: the
   `atlas-image-<image>` base LV and the kernel file must exist — the same probe
-  `provision-vm.py` does; image sync is a separate multi-minute Task, so we fail
-  loud and early, not late in boot);
+  `provision-vm.py` does). **Two cases by image kind:**
+  - **Syncable image** (has a rootfs URL): if absent on the target, `sync-image`
+    is a separate multi-minute Task, so we fail loud and early, not late in boot.
+  - **Local image** (`is_local` — promoted from a snapshot, no rootfs URL, so
+    `sync-image` cannot place it): it lives only on the source host and is
+    **shipped to the target during `TargetPreparing`** over the same NBD path the
+    disk uses (§5.1). This does *not* fail pre-flight — a VM on a snapshot-promoted
+    image is migratable;
 - **change-address only:** the target has **IPv6 capacity**
   (`allocate_ipv6(target)` would succeed); **thin-pool headroom**
   (`PoolUsage` below the fill threshold) is checked on every path regardless of
@@ -893,6 +899,49 @@ the entire `CutoverStarting` phase.
    only writes any non-address bits. Both via
    `rootfs.inject_identity(device, Identity(...), regenerate_host_keys=False)` —
    **host keys preserved**, exactly as `rebuild`/`restore` do. Unmount.
+
+### 5.1 Local base image ship (`migration-export-base.py` + `migration-receive-base.py`)
+
+A VM whose base image is **local** (`is_local` — promoted from a snapshot, no
+rootfs URL; spec/08-images.md) cannot be migrated by the flow above as-is: the
+`atlas-image-<image>` base LV lives **only on the source host** it was promoted
+on, and `sync-image` has nothing to download. Before this, such a VM wedged
+`TargetPreparing` at `base image LV not on target: …; run Sync to Server first`.
+
+The fix ships the local base to the target **the same way the disk is shipped** —
+an NBD export the target flattens into a fresh local LV — so no new transport, no
+host-to-host SSH (deferred, §2.1), no HTTP surface. It runs as the **first step of
+`TargetPreparing`**, before the disk clone, and is a no-op for a syncable/already-
+present image. A base image needs **two** artifacts on the target, so there are two
+exports over the disk export's spare ports:
+
+- **port `nbd_port+2`** — the read-only `atlas-image-<image>` LV as a block export
+  (`migration-export-base.py`). The base is immutable, so it is exported
+  **directly**, with no thin snapshot in between (unlike the live VM disk).
+- **port `nbd_port+3`** — a **file-backed** NBD export of a `tar` of the image
+  directory (`kernel` + rootfs sentinel). `qemu-nbd` serves a plain file, so the
+  small metadata tar rides the same channel — this is how the **kernel** reaches
+  the target without a controller→host download or host-to-host copy.
+
+Target (`migration-receive-base.py`), two phases driven per scheduler tick:
+
+1. `PHASE=prepare` — `nbd-client` to both exports (slots 8/9, clear of the disk
+   clone's 0/1); create the writable thin LV `atlas-image-<image>`; build a
+   dm-clone `atlas-base-<image>-clone` reading through the base export; extract the
+   image-dir tar into `image_directory(<image>)`.
+2. controller enables + polls hydration via `migration-poll-hydration.py`
+   **`--clone-device atlas-base-<image>-clone`** (the same script + percent parse
+   as the VM disk — this is why the poll script grew an explicit `clone_device`),
+   writing `base_ship_percent`/`progress_percent` each tick so the copy is visible.
+3. `PHASE=finalize` — at 100%, collapse the dm-clone to the plain LV, `lvchange
+   --permission r` (a base image is never written), disconnect the nbd clients.
+   The result is a first-class local base image on the target, indistinguishable
+   from a synced one; the migration then proceeds to the normal disk clone.
+
+`TargetPreparing` therefore becomes **non-advancing while a base ships** (returns
+False to re-enter), exactly like `Hydrating`. Cleanup (`migration-cleanup-source`)
+kills the `+2`/`+3` exports and removes the staged tar; the source's base LV is its
+own immutable image and is **never** removed.
 
 ### Data disk (resolved: a second parallel dm-clone)
 
