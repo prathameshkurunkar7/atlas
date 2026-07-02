@@ -20,10 +20,19 @@ What it proves — the host facts only a real cross-host move can:
   4. The VM's SSH host key is BYTE-IDENTICAL before and after (identity survived).
   5. The source copy is fully torn down (unit inactive, disk + -migrate snaps gone).
 
-STAGE 1 (this build): change-address, plain-TCP NBD transport (no SSH tunnel yet).
-The unit suite (test_virtual_machine_migration.py) owns the phase-order, pre-flight,
-immutability/retry, flags.migrating-gate, and lifecycle-guard logic in milliseconds;
-this module is only the host facts.
+Two scenarios, one per address scheme (each owns the two-droplet harness):
+  - `run_smoke` — CHANGE-address (the Self-Managed fallback / non-forwardable path):
+    the VM gets a NEW /128 on the target and the proxy re-points. Facts 1-5 above.
+  - `run_keep_address_smoke` — KEEP-address (spec/19 §2.9, stage 3): the VM keeps
+    its /128; the source host keeps holding the /64 and forwards the address to the
+    target over a per-VM tunnel, with the guest's replies policy-routed back up it.
+    Then Collapse-forward moves it to a new /128 and tears the tunnel down.
+
+TRANSPORT (this build): plain-TCP NBD + plain-TCP socat tunnel carrier (no SSH
+tunnel yet — a secure host-to-host carrier is a deferred follow-up). The unit suite
+(test_virtual_machine_migration.py) owns the phase-order, pre-flight, immutability/
+retry, flags.migrating-gate, capability-gate, and lifecycle-guard logic in
+milliseconds; this module is only the host facts.
 """
 
 import time
@@ -32,7 +41,7 @@ import frappe
 
 from atlas.atlas import migration as migration_module
 from atlas.atlas.ssh import connection_for_server, run_ssh, ssh_key_file
-from atlas.tests.e2e._droplets import ensure_bootstrapped_server, server_is_reachable
+from atlas.tests.e2e._droplets import ensure_two_active_servers
 from atlas.tests.e2e._image import ensure_image_on_server
 from atlas.tests.e2e._shared import ephemeral_public_key
 
@@ -52,8 +61,7 @@ def run_smoke(reuse: bool = True, keep: bool = True) -> None:
 	"""The host-fact path: migrate a fresh disposable VM source→target, assert the
 	five facts above, then terminate it. Reuses any Active source + a second Active
 	target if present; provisions what's missing."""
-	source, _client, _created = ensure_bootstrapped_server(reuse=reuse, keep=keep)
-	target = _ensure_second_active_server(source.name, reuse=reuse, keep=keep)
+	source, target = ensure_two_active_servers(reuse=reuse, keep=keep)
 	# The default image must be present on BOTH hosts (source exports, target boots).
 	image = ensure_image_on_server(source.name)
 	ensure_image_on_server(target.name)
@@ -116,22 +124,122 @@ def run_smoke(reuse: bool = True, keep: bool = True) -> None:
 			frappe.db.commit()
 
 
-def _ensure_second_active_server(exclude: str, reuse: bool, keep: bool):
-	"""A second Active, same-provider Server distinct from `exclude`. Reuses one if a
-	second Active pair exists; otherwise provisions a fresh target droplet."""
-	source_provider = frappe.db.get_value("Server", exclude, "provider_type")
-	if reuse:
-		for name in frappe.get_all("Server", filters={"status": "Active"}, pluck="name"):
-			if name == exclude:
-				continue
-			if frappe.db.get_value("Server", name, "provider_type") != source_provider:
-				continue
-			if server_is_reachable(name):
-				return frappe.get_doc("Server", name)
-	# Provision a fresh one via the same primitive; ensure_bootstrapped_server won't
-	# hand back `exclude` because we mark it in-use by passing reuse=False here.
-	server, _client, _created = ensure_bootstrapped_server(reuse=False, keep=keep)
-	return server
+def run_keep_address_smoke(reuse: bool = True, keep: bool = True) -> None:
+	"""The KEEP-ADDRESS host-fact path (spec/19 §2.9, stage 3): migrate a fresh VM
+	source→target keeping its /128, then prove the facts only a real cross-host
+	forward can:
+
+	  1. All phases advance to Done; the VM row flips `server` to the target but its
+	     `ipv6_address` is UNCHANGED (no new /128 allocated).
+	  2. The guest is reachable at the SAME /128 after the move — inbound still lands
+	     on the source (which holds the /64) and is tunnelled to the target, and the
+	     guest's replies come back up the tunnel (the BCP38 return path).
+	  3. The VM is recorded as forwarded from the source (traffic_forwarded_from),
+	     tunnel_status=Forwarding, and the mig6-<vm8> device is up on BOTH hosts.
+	  4. SSH host key preserved; source disk/snap copy torn down (the tunnel stays).
+	  5. Collapse-forward then moves the VM to a NEW /128 on the target, tears the
+	     tunnel down on both hosts, and clears the forward markers.
+
+	Reachability is probed FROM THE TARGET HOST over the guest's /128 (the same
+	in-fabric vantage the change-address smoke uses): a laptop has no v6 route to the
+	guest, but the target host reaches it through its own veth once the return route
+	is in place. Off-host-through-the-source delivery is what the tunnel provides;
+	the target-side probe confirms the full inbound+return loop works end to end."""
+	source, target = ensure_two_active_servers(reuse=reuse, keep=keep)
+	image = ensure_image_on_server(source.name)
+	ensure_image_on_server(target.name)
+	public_key = ephemeral_public_key()
+
+	vm = frappe.get_doc(
+		{
+			"doctype": "Virtual Machine",
+			"title": "vm-migration-keep",
+			"server": source.name,
+			"image": image.name,
+			"vcpus": 1,
+			"memory_megabytes": 1024,
+			"disk_gigabytes": 4,
+			"ssh_public_key": public_key,
+		}
+	).insert(ignore_permissions=True)
+	vm.provision()
+	frappe.db.commit()
+	_wait_for_boot(vm.name, vm.server, vm.ipv6_address)
+	kept_ipv6 = vm.ipv6_address
+	host_key_before = _guest_host_key(vm.server, vm.ipv6_address)
+	assert host_key_before, "could not read the guest's SSH host key before migration"
+
+	try:
+		migration_name = frappe.get_doc("Virtual Machine", vm.name).migrate(target_server=target.name)
+		frappe.db.commit()
+		migration = frappe.get_doc("Virtual Machine Migration", migration_name)
+		assert migration.keep_address, (
+			"expected a keep-address migration; provider capability said the /128 "
+			"is not forwardable — check vm_range_is_forwardable for this provider"
+		)
+		final = _drive_to_terminal(migration_name)
+		assert final == "Done", f"migration ended {final}, expected Done"
+
+		# Fact 1: server flipped, address UNCHANGED.
+		vm.reload()
+		assert vm.server == target.name, f"VM still on {vm.server}, expected {target.name}"
+		assert vm.status == "Running", f"VM status {vm.status}, expected Running"
+		assert vm.ipv6_address == kept_ipv6, (
+			f"address changed on a keep-address migration: {kept_ipv6} -> {vm.ipv6_address}"
+		)
+
+		# Fact 2: reachable at the SAME /128 after the move (inbound via source→tunnel,
+		# reply via the return route back up the tunnel).
+		_wait_for_boot(vm.name, target.name, kept_ipv6)
+
+		# Fact 3: forward recorded + tunnel up on both hosts.
+		assert vm.traffic_forwarded_from == source.name, (
+			f"traffic_forwarded_from {vm.traffic_forwarded_from}, expected {source.name}"
+		)
+		migration.reload()
+		assert migration.tunnel_status == "Forwarding", f"tunnel_status {migration.tunnel_status}"
+		device = migration.tunnel_device
+		assert _tunnel_up(source.name, device), f"tunnel {device} not up on source {source.name}"
+		assert _tunnel_up(target.name, device), f"tunnel {device} not up on target {target.name}"
+
+		# Fact 4: host key preserved, source disk copy gone (tunnel stays).
+		host_key_after = _guest_host_key(target.name, kept_ipv6)
+		assert host_key_after == host_key_before, (
+			f"SSH host key changed across migration: {host_key_before} -> {host_key_after}"
+		)
+		assert _source_clean(source.name, vm.name), "source disk copy not cleaned up"
+
+		print(
+			f"[e2e] vm-migration-keep OK: {vm.name} moved {source.name} -> {target.name}, "
+			f"kept /128 {kept_ipv6}, forwarded via {device}, host key preserved"
+		)
+
+		# Fact 5: Collapse-forward → new /128, tunnel gone, markers cleared.
+		frappe.get_doc("Virtual Machine", vm.name).collapse_forward()
+		frappe.db.commit()
+		vm.reload()
+		assert vm.ipv6_address != kept_ipv6, "address did not change after Collapse-forward"
+		target_range = frappe.db.get_value("Server", target.name, "ipv6_virtual_machine_range")
+		assert _ip_in_range(vm.ipv6_address, target_range), (
+			f"collapsed /128 {vm.ipv6_address} not in target range {target_range}"
+		)
+		assert not vm.traffic_forwarded_from, "traffic_forwarded_from not cleared after collapse"
+		assert not _tunnel_up(source.name, device), f"tunnel {device} still up on source after collapse"
+		assert not _tunnel_up(target.name, device), f"tunnel {device} still up on target after collapse"
+		_wait_for_boot(vm.name, target.name, vm.ipv6_address)
+		print(f"[e2e] collapse-forward OK: {vm.name} moved to new /128 {vm.ipv6_address}, tunnel torn down")
+	finally:
+		if not keep:
+			frappe.get_doc("Virtual Machine", vm.name).terminate()
+			frappe.db.commit()
+
+
+def _tunnel_up(host: str, device: str) -> bool:
+	"""True if the mig6-<vm8> tunnel device exists and is UP on `host`."""
+	if not device:
+		return False
+	out = host_shell(host, f"ip link show {device} 2>/dev/null || echo MISSING")
+	return "MISSING" not in out and ("state UP" in out or "UP," in out or ",UP" in out)
 
 
 def _drive_to_terminal(migration_name: str) -> str:
