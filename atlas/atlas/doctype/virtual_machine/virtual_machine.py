@@ -253,6 +253,24 @@ class VirtualMachine(Document):
 		).insert(ignore_permissions=True)
 		return migration.name
 
+	@frappe.whitelist()
+	def collapse_forward(self) -> None:
+		"""Tear down this VM's keep-address forward and fall back to change-address
+		(spec/19 §2.9.5). Only meaningful for a VM whose traffic is still forwarded
+		from another host (set after a keep-address migration); the source host keeps
+		egressing the VM's /128 until this runs. The VM gets a NEW /128 on its
+		current host, the Subdomains re-point, and the cross-host tunnel is removed.
+
+		Guarded against a concurrent migration (the phase machine owns the host while
+		it runs). The heavy lifting — host teardown on both ends, re-provision,
+		re-point — lives in migration.collapse_forward."""
+		from atlas.atlas.migration import collapse_forward
+
+		if not self.traffic_forwarded_from:
+			frappe.throw(_("Virtual Machine {0} has no active forward to collapse").format(self.name))
+		self._guard_no_active_migration()
+		collapse_forward(self)
+
 	def _guard_no_active_migration(self) -> None:
 		"""Throw if a non-terminal migration exists for this VM. The migration phase
 		machine owns every host operation while it runs; a concurrent lifecycle action

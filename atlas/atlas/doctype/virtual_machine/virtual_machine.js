@@ -130,7 +130,104 @@ function add_lifecycle_buttons(frm) {
 		// drift. The first thing to check when a site 404s / resets at the proxy.
 		frappe.atlas.add_action(frm, "Live proxy maps", () => show_proxy_maps(frm));
 	}
+	// Migrate: move this VM's disk to another host, keeping its identity (spec/19).
+	// The pre-flight stops a Running/Paused VM, so we paint it on any live status.
+	if (status === "Running" || status === "Stopped" || status === "Paused") {
+		frappe.atlas.add_action(frm, "Migrate", () => open_migrate_dialog(frm));
+	}
+	// Collapse forward: only for a VM whose traffic is still forwarded from another
+	// host after a keep-address migration. Tears the tunnel down and moves the VM
+	// to a fresh /128 on its current host (spec/19 §2.9.5).
+	if (frm.doc.traffic_forwarded_from && status !== "Terminated") {
+		frappe.atlas.add_action(frm, "Collapse forward", () => confirm_collapse_forward(frm));
+	}
 	frappe.atlas.add_danger(frm, "Terminate", () => confirm_terminate(frm));
+}
+
+function open_migrate_dialog(frm) {
+	const who = frm.doc.title || frm.doc.name.slice(0, 8);
+	const dialog = new frappe.ui.Dialog({
+		title: __("Migrate {0}", [who]),
+		fields: [
+			{
+				fieldname: "target_server",
+				label: __("Target Server"),
+				fieldtype: "Link",
+				options: "Server",
+				reqd: 1,
+				get_query: () => ({
+					// Only other Active hosts — the current one can't be the target.
+					filters: { status: "Active", name: ["!=", frm.doc.server] },
+				}),
+				description: __("Another Active host. Must share this VM's provider."),
+			},
+			{
+				fieldname: "release_reserved_ip",
+				label: __("Release attached public IPv4"),
+				fieldtype: "Check",
+				default: 0,
+				depends_on: "eval:false",
+				description: __(
+					"Only relevant if a Reserved IP is attached. Acknowledges the inbound v4 is released across the move (re-attach a target-host Reserved IP afterward)."
+				),
+			},
+			{
+				fieldname: "cost_hint",
+				fieldtype: "HTML",
+				options: `<p class="text-muted small">${__(
+					"Cold migration: the VM is stopped during cutover but keeps its UUID and SSH host keys. On a provider that supports it the VM also keeps its IPv6 address (the source host forwards it); otherwise it gets a new address and the proxy re-points. Runs phase by phase in the background."
+				)}</p>`,
+			},
+		],
+		primary_action_label: __("Migrate"),
+		primary_action(values) {
+			dialog.hide();
+			frm.call("migrate", {
+				target_server: values.target_server,
+				release_reserved_ip: values.release_reserved_ip ? 1 : 0,
+			}).then(({ message: migration_name }) => {
+				if (!migration_name) return;
+				frappe.show_alert(
+					{
+						message: __("Migration {0} started.", [migration_name]),
+						indicator: "blue",
+					},
+					6
+				);
+				frappe.set_route("Form", "Virtual Machine Migration", migration_name);
+			});
+		},
+	});
+	// Reveal the Reserved-IP ack only when one is actually attached.
+	if (frm.doc.public_ipv4) {
+		dialog.fields_dict.release_reserved_ip.df.depends_on = "eval:true";
+		dialog.refresh();
+	}
+	dialog.show();
+}
+
+function confirm_collapse_forward(frm) {
+	const who = frm.doc.title || frm.doc.name.slice(0, 8);
+	frappe.atlas.confirm_cost({
+		title: __("Collapse forward for {0}?", [who]),
+		body_html: `<p>${__(
+			"This VM's traffic is currently forwarded from <b>{0}</b>. Collapsing tears down that cross-host tunnel and gives the VM a <b>new IPv6 address</b> on its current host, re-pointing any attached sites. The address change is the cost of removing the dependency on the source host.",
+			[frappe.utils.escape_html(frm.doc.traffic_forwarded_from)]
+		)}</p>`,
+		proceed_label: __("Collapse forward"),
+		proceed() {
+			frm.call("collapse_forward").then(() => {
+				frappe.show_alert(
+					{
+						message: __("Forward collapsed; VM moved to a new address."),
+						indicator: "green",
+					},
+					6
+				);
+				frm.reload_doc();
+			});
+		},
+	});
 }
 
 // Stash this guest as the SSH Console's one target and route there — a
@@ -524,6 +621,25 @@ function render_status_intro(frm) {
 	const status = frm.doc.status;
 
 	if (status === "Terminated") {
+		return;
+	}
+
+	// A kept-address migration leaves this VM's traffic forwarded from the source
+	// host indefinitely — surface that cross-host dependency so it isn't invisible.
+	if (frm.doc.traffic_forwarded_from) {
+		const since = frm.doc.traffic_forwarded_since
+			? frappe.datetime.str_to_user(frm.doc.traffic_forwarded_since)
+			: "";
+		frm.set_intro(
+			__(
+				"Traffic is forwarded from <b>{0}</b>{1} — this VM kept its address across a migration and depends on that host. Use <b>Collapse forward</b> to move to a new address and remove the dependency.",
+				[
+					frappe.utils.escape_html(frm.doc.traffic_forwarded_from),
+					since ? __(" since {0}", [since]) : "",
+				]
+			),
+			"orange"
+		);
 		return;
 	}
 
