@@ -497,13 +497,16 @@ class TestGuestScriptTypedIO(IntegrationTestCase):
 
 	def test_admin_main_sets_admin_domain_no_rename(self) -> None:
 		"""Admin mode: no site rename — instead `[admin].domain` is set to the FQDN +
-		`bench setup production`, mapping the FQDN to the admin app's vhost."""
+		`bench setup production`, mapping the FQDN to the admin app's vhost — then
+		the admin login URL is minted (Pilot #117 `generate-admin-session`)."""
 		guest = self.guest
+		admin_login_url = "http://admin.blr1.frappe.dev/?sid=jwt-token"
 		with (
 			patch.object(guest, "_preflight"),
 			patch.object(guest, "_await_db_ready"),
 			patch.object(guest, "_bench"),
 			patch.object(guest, "_set_admin_domain") as m_admin,
+			patch.object(guest, "_mint_admin_login_url", return_value=admin_login_url) as m_mint,
 			patch.object(guest, "_rename_site_to_fqdn") as m_rename,
 			patch.object(guest, "_serving", return_value=True),
 			patch.object(
@@ -517,6 +520,19 @@ class TestGuestScriptTypedIO(IntegrationTestCase):
 			guest.main()
 		m_admin.assert_called_once_with("acme.blr1.frappe.dev")
 		m_rename.assert_not_called()
+		# Minting runs AFTER _set_admin_domain, so the printed URL carries the real
+		# FQDN, not the placeholder admin.localhost.
+		m_mint.assert_called_once_with()
+
+	def test_mint_admin_login_url_uses_generate_admin_session_full_path(self) -> None:
+		"""`_mint_admin_login_url` shells out to Pilot #117's
+		`bench generate-admin-session --full-path` and returns its bare stdout —
+		never touching the (random, bake-time) [admin].password."""
+		guest = self.guest
+		with patch.object(guest, "_bench", return_value="http://admin.example/?sid=jwt\n") as m_bench:
+			url = guest._mint_admin_login_url()
+		self.assertEqual(url, "http://admin.example/?sid=jwt")
+		m_bench.assert_called_once_with("generate-admin-session", "--full-path", capture=True)
 
 	def test_set_admin_domain_rewrites_toml_and_regenerates(self) -> None:
 		"""Admin mode points the admin vhost at the FQDN by rewriting `domain = ""`

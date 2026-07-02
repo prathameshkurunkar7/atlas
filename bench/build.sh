@@ -40,26 +40,32 @@ set -euo pipefail
 # proxy/build.sh follows). The Frappe branch + the production/MariaDB/ZFS shape
 # are pinned in bench.toml.
 #
-# Pinned at 03a4272 (main @ 2026-06-25). This ref carries the three things this
+# Pinned at fc89e51 (main @ 2026-07-01). This ref carries the four things this
 # build/deploy flow now depends on: (1) the two-path install.sh — run as root it
 # creates the bench user + sudoers, run as the user it installs bench-cli (so we no
 # longer hand-roll useradd/sudoers); (2) `bench rename-site` (deploy-site.py renames
 # the baked site through it — ABSENT before commit 0bc54f2, so an older pin breaks
 # the deploy); (3) nginx emits `listen [::]:80` for every site + admin vhost (since
 # dd14ad4), so the Atlas v6-only inbound path is served by bench-cli itself — no
-# v6-listener / default_server surgery here.
+# v6-listener / default_server surgery here; (4) `bench generate-admin-session`
+# (Pilot #117, merged as 35ae14e) — the admin-mode login-URL handoff.
 #
 # BENCH_CLI_REF / ERPNEXT_BRANCH are ENV OVERRIDES: the controller
 # (atlas.atlas.image_builder) exports them per recipe so one committed build.sh
 # bakes any Frappe version (v15 / v16 / nightly). The Frappe branch + Python
 # version are pinned in bench.toml (rendered by the controller before upload).
 # The defaults below keep a direct `build.sh` run (no env) reproducible at v16. ---
-BENCH_CLI_REF="${BENCH_CLI_REF:-03a4272068f78a402d407c4ae9b071be5e00a14b}"  # default: main @ 2026-06-25 (two-path install.sh + rename-site + IPv6 listeners)
+BENCH_CLI_REF="${BENCH_CLI_REF:-fc89e51031739199861556c4b1592d38163821bf}"  # default: main @ 2026-07-01 (adds generate-admin-session, PR #117)
 ERPNEXT_BRANCH="${ERPNEXT_BRANCH:-version-16}"  # default: v16; controller overrides for v15 / develop
 
 BENCH_USER="frappe"
 BENCH_HOME="/home/$BENCH_USER"
-BENCH_CLI_DIR="$BENCH_HOME/bench-cli"
+# The bench-cli repo was renamed frappe/bench-cli → frappe/pilot on main after
+# PR #117; its install.sh (fc89e51+) now clones to ~/pilot, not ~/bench-cli. The
+# variable keeps its name (bench-cli is still the CLI's colloquial name across the
+# tree), only the on-disk path follows the rename. Kept in lockstep with
+# deploy-site.py's BENCH_CLI_DIR and warm.sh's.
+BENCH_CLI_DIR="$BENCH_HOME/pilot"
 BENCH_NAME="atlas"
 BENCH_DIR="$BENCH_CLI_DIR/benches/$BENCH_NAME"
 
@@ -90,7 +96,7 @@ export DEBIAN_FRONTEND=noninteractive
 # Run a command as the bench user through a LOGIN shell, so the uv/Node env
 # install.sh set up is in place — exactly how an interactive operator following
 # bench-setup.md reaches `bench`. We prepend bench-cli to PATH explicitly rather
-# than rely on the `export PATH=…/bench-cli` line install.sh appends to ~/.bashrc:
+# than rely on the `export PATH=…/pilot` line install.sh appends to ~/.bashrc:
 # `bash -lc` is NON-interactive, and Ubuntu's stock ~/.bashrc returns at its top
 # (`case $- in *i*) ;; *) return;; esac`) for non-interactive shells, BEFORE that
 # export ever runs — so the login shell would otherwise not see `bench` at all
@@ -147,7 +153,7 @@ apt-get install -y --no-install-recommends zfsutils-linux git
 # bench-cli dir yet) — a re-run must NOT re-invoke it, as install.sh `git pull`s to
 # self-update and FATALs on the detached HEAD the pin below leaves ("not currently on
 # a branch"). Re-running just re-fetches + re-pins the ref. ---
-INSTALL_URL="https://raw.githubusercontent.com/frappe/bench-cli/$BENCH_CLI_REF/install.sh"
+INSTALL_URL="https://raw.githubusercontent.com/frappe/pilot/$BENCH_CLI_REF/install.sh"
 curl -fsSL "$INSTALL_URL" | bash -s -- --user "$BENCH_USER" -y
 
 # Enable lingering for the bench user NOW that it exists. Current bench-cli runs
@@ -173,6 +179,18 @@ if [ ! -f "$BENCH_DIR/bench.toml" ]; then
 	as_frappe "bench new '$BENCH_NAME'"
 fi
 install -m 0644 -o "$BENCH_USER" -g "$BENCH_USER" "$SRC_DIR/bench.toml" "$BENCH_DIR/bench.toml"
+
+# The committed bench.toml carries a placeholder [admin].password (bench-cli
+# refuses to start the admin app with none set). Replace it with a long random
+# secret ONCE, generated here at bake time and never printed — mirrors
+# BAKED_ADMIN_PASSWORD above. Admin mode's `bench generate-admin-session`
+# (Pilot #117) is the tenant handoff (bench/deploy-site.py), so this password is
+# never surfaced either. Idempotent: only replace the known placeholder, so a
+# re-bake does not clobber an already-randomized password from a prior run.
+if grep -q '^password = "admin-password"$' "$BENCH_DIR/bench.toml"; then
+	admin_password="$(openssl rand -hex 32)"
+	sed -i "s/^password = \"admin-password\"\$/password = \"$admin_password\"/" "$BENCH_DIR/bench.toml"
+fi
 
 # --- 5. `bench init` (bench-setup.md §6). The heavy, idempotent step that sets
 # up the per-bench substrate from bench.toml: the ZFS pool + datasets

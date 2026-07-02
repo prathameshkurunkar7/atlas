@@ -18,9 +18,10 @@
 # The deploy is `bench new-site`-free (baked) and `set-admin-password`-free — the
 # baked Administrator password is a long random secret generated at bake time and
 # never surfaced. Instead, site mode mints a one-click session URL with
-# `bench browse --user Administrator` (a real 24h session, no password). The result
-# carries `login_url` — the only way in besides a password the tenant sets
-# themselves later.
+# `bench browse --user Administrator` (a real 24h session, no password);
+# admin mode mints one with `bench generate-admin-session --full-path` (Pilot #117,
+# a 5-minute single-use JWT). Either way the result carries `login_url` — the only
+# way in besides a password the tenant/operator sets themselves later.
 #
 # The rename is one bench-cli command: `bench rename-site <old> <new>`
 # (bench-setup-manual.md) moves the site dir, updates the site config, regenerates
@@ -63,7 +64,9 @@ RESULT_MARKER = "ATLAS_RESULT="
 # bench lives under that user's home and every bench command runs as `frappe`.
 BENCH_USER = "frappe"
 BENCH_HOME = f"/home/{BENCH_USER}"
-BENCH_CLI_DIR = f"{BENCH_HOME}/bench-cli"
+# ~/pilot since the frappe/bench-cli → frappe/pilot rename (install.sh fc89e51+
+# clones there); see bench/build.sh's BENCH_CLI_DIR note.
+BENCH_CLI_DIR = f"{BENCH_HOME}/pilot"
 BENCH_NAME = "atlas"
 BENCH_DIR = f"{BENCH_CLI_DIR}/benches/{BENCH_NAME}"
 BENCH = f"{BENCH_CLI_DIR}/bench"
@@ -127,10 +130,12 @@ class DeploySiteInputs:
 class DeploySiteResult:
 	"""What the deploy records on the Task row for the operator's audit trail. `site`
 	is the FQDN the deploy served; `serving` is the in-guest local probe's verdict;
-	`login_url` is the one-click handoff URL, replacing a shared password: site mode
-	mints it with `bench browse` (a real 24h session, built into
-	`https://<fqdn>/app?sid=<sid>` — Contract A: the FQDN is the one routing string,
-	HTTPS terminates at the edge proxy, never in-guest)."""
+	`login_url` is the one-click handoff URL, replacing a shared password either
+	way: site mode mints it with `bench browse` (a real 24h session, built
+	into `https://<fqdn>/app?sid=<sid>` — Contract A: the FQDN is the one routing
+	string, HTTPS terminates at the edge proxy, never in-guest); admin mode mints it
+	with `bench generate-admin-session --full-path` (a 5-minute single-use JWT,
+	Pilot #117)."""
 
 	site: str
 	serving: bool
@@ -315,6 +320,19 @@ def _mint_login_url(fqdn: str) -> str:
 	return f"https://{fqdn}/app?sid={match.group(1)}"
 
 
+def _mint_admin_login_url() -> str:
+	"""Admin mode only: mint the admin console's one-click sign-in URL, replacing
+	the shared baked `[admin].password` handoff.
+
+	`bench generate-admin-session --full-path` (Pilot #117, bench-cli) issues a
+	5-minute single-use `?sid=` JWT, signed by `admin.jwt_secret` (auto-generated
+	in bench.toml on first call) — the admin frontend exchanges it for a 1-day
+	HttpOnly session cookie. Password login still works but is no longer the
+	handoff. Run AFTER `_set_admin_domain` so the printed URL already carries the
+	real FQDN, not the placeholder `admin.localhost`."""
+	return _bench("generate-admin-session", "--full-path", capture=True).strip()
+
+
 def _set_admin_domain(fqdn: str) -> None:
 	"""Admin mode: point the admin vhost at the FQDN, then run production setup.
 
@@ -469,6 +487,9 @@ def main() -> None:
 		log("admin mode: pointing [admin].domain at the FQDN + setup production …")
 		_set_admin_domain(inputs.site_name)
 		log("admin vhost regenerated + reloaded")
+		log("minting admin login URL (bench generate-admin-session --full-path) …")
+		login_url = _mint_admin_login_url()
+		log("admin login URL minted")
 	else:
 		# `bench rename-site` moves the site, regenerates nginx, AND re-runs
 		# production setup for the new domain in one step — so there is no separate

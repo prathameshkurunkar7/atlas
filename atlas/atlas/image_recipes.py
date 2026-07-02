@@ -166,7 +166,7 @@ _BENCH_MEMORY_MB = 2048
 # Frappe release needs a newer bench-cli. Kept in lockstep with bench/build.sh's
 # BENCH_CLI_REF default (the value a direct `build.sh` run uses with no env override).
 _BENCH_CLI_REF = (
-	"03a4272068f78a402d407c4ae9b071be5e00a14b"  # main @ 2026-06-25 (two-path install.sh + rename-site)
+	"fc89e51031739199861556c4b1592d38163821bf"  # main @ 2026-07-01 (adds generate-admin-session, PR #117)
 )
 
 

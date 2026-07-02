@@ -35,7 +35,8 @@ SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BAKED_SITE="site.local"
 BENCH_USER="frappe"
 BENCH_HOME="/home/$BENCH_USER"
-BENCH_CLI_DIR="$BENCH_HOME/bench-cli"
+# ~/pilot since the frappe/bench-cli → frappe/pilot rename; see build.sh's note.
+BENCH_CLI_DIR="$BENCH_HOME/pilot"
 BENCH_NAME="atlas"
 BENCH="$BENCH_CLI_DIR/bench"
 

@@ -239,11 +239,11 @@ def _assert_bench_self_routing(
 	# run must exercise the Phase-1 contract, not whatever was baked.
 	_install_repo_provider(guest)
 
-	bench = "/home/frappe/bench-cli/benches/atlas"
+	bench = "/home/frappe/pilot/benches/atlas"
 
 	def new_site_cmd(site_fqdn: str) -> str:
 		return (
-			f'sudo -u frappe bash -lc "export PATH=/home/frappe/bench-cli:$PATH; cd {bench}; '
+			f'sudo -u frappe bash -lc "export PATH=/home/frappe/pilot:$PATH; cd {bench}; '
 			f'bench -b atlas new-site {site_fqdn} --admin-password atlas-baked --apps erpnext"'
 		)
 
@@ -287,7 +287,7 @@ def _assert_bench_self_routing(
 	assert frappe.db.exists("Subdomain", rollback_label), "register did not reserve the rollback label"
 	# A new-site with a bogus app name fails AFTER the reservation, the create-failure case.
 	bogus = (
-		f'sudo -u frappe bash -lc "export PATH=/home/frappe/bench-cli:$PATH; cd {bench}; '
+		f'sudo -u frappe bash -lc "export PATH=/home/frappe/pilot:$PATH; cd {bench}; '
 		f'bench -b atlas new-site {rollback_label}.{domain} --admin-password atlas-baked --apps no_such_app_xyz"'
 	)
 	_stdout, _stderr, fail_code = guest(bogus)
@@ -304,7 +304,7 @@ def _assert_bench_self_routing(
 	#    the site DB, so it needs the MariaDB ROOT password; bench-cli prompts for it over
 	#    a non-interactive SSH session, so pipe in the baked, shared root password.
 	drop = (
-		f'sudo -u frappe bash -lc "export PATH=/home/frappe/bench-cli:$PATH; cd {bench}; '
+		f'sudo -u frappe bash -lc "export PATH=/home/frappe/pilot:$PATH; cd {bench}; '
 		f'echo {_BAKED_MARIADB_ROOT_PASSWORD} | bench -b atlas drop-site {fqdn} --no-backup --force"'
 	)
 	_stdout, stderr, code = guest(drop)
