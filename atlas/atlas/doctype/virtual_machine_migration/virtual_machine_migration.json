@@ -16,6 +16,13 @@
     "ipv6_address_new",
     "column_break_addressing",
     "release_reserved_ip",
+    "keep_address",
+    "section_break_forward",
+    "forward_address",
+    "tunnel_status",
+    "forward_active",
+    "column_break_forward",
+    "tunnel_device",
     "section_break_transfer",
     "nbd_port",
     "nbd_pid",
@@ -102,6 +109,57 @@
       "fieldtype": "Check",
       "label": "Release Reserved IP",
       "set_only_once": 1
+    },
+    {
+      "default": "0",
+      "description": "1 iff the VM keeps its /128 across the move (the source host keeps forwarding it). Computed at insert from the provider's vm_range_is_forwardable capability. When 0, the migration takes the change-address path (new /128 + proxy re-point).",
+      "fieldname": "keep_address",
+      "fieldtype": "Check",
+      "label": "Keep Address",
+      "read_only": 1,
+      "set_only_once": 1
+    },
+    {
+      "depends_on": "keep_address",
+      "fieldname": "section_break_forward",
+      "fieldtype": "Section Break",
+      "label": "Keep-Address Forward"
+    },
+    {
+      "default": "0",
+      "description": "1 iff the keep-address mechanism must re-assert proxy-NDP on the source at cutover (DigitalOcean); 0 for a routed-prefix provider (Scaleway), where NDP is a no-op. Always 0 when keep_address is 0.",
+      "fieldname": "forward_address",
+      "fieldtype": "Check",
+      "label": "Forward Address (proxy-NDP)",
+      "read_only": 1,
+      "set_only_once": 1
+    },
+    {
+      "description": "Observability of the live forwarding path. On the keep-address path this reaches Forwarding at Cleanup and stays there until the operator collapses the forward.",
+      "fieldname": "tunnel_status",
+      "fieldtype": "Select",
+      "label": "Tunnel Status",
+      "options": "\nArmed\nForwarding\nTornDown",
+      "read_only": 1
+    },
+    {
+      "default": "0",
+      "description": "Mirrors tunnel_status == Forwarding as a simple predicate for the dashboard indicator and to gate the Collapse-forward action.",
+      "fieldname": "forward_active",
+      "fieldtype": "Check",
+      "label": "Forward Active",
+      "read_only": 1
+    },
+    {
+      "fieldname": "column_break_forward",
+      "fieldtype": "Column Break"
+    },
+    {
+      "description": "The mig6-<vm8> tunnel interface name on both hosts (teardown / lost-task re-entry handle). Derived from the VM UUID.",
+      "fieldname": "tunnel_device",
+      "fieldtype": "Data",
+      "label": "Tunnel Device",
+      "read_only": 1
     },
     {
       "fieldname": "section_break_transfer",

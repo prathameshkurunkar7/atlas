@@ -40,11 +40,14 @@ class VirtualMachineMigration(Document):
 		completed_at: DF.Datetime | None
 		error_at_status: DF.Data | None
 		error_message: DF.LongText | None
+		forward_active: DF.Check
+		forward_address: DF.Check
 		hydration_last_polled: DF.Datetime | None
 		hydration_percent: DF.Int
 		hydration_stall_ticks: DF.Int
 		ipv6_address_new: DF.Data | None
 		ipv6_address_old: DF.Data | None
+		keep_address: DF.Check
 		nbd_pid: DF.Int
 		nbd_port: DF.Int
 		release_reserved_ip: DF.Check
@@ -63,6 +66,8 @@ class VirtualMachineMigration(Document):
 		]
 		started_at: DF.Datetime | None
 		target_server: DF.Link
+		tunnel_device: DF.Data | None
+		tunnel_status: DF.Literal["", "Armed", "Forwarding", "TornDown"]
 		virtual_machine: DF.Link
 	# end: auto-generated types
 
