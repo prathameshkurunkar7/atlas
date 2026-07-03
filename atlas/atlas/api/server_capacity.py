@@ -23,7 +23,11 @@ slug→vCPU dict, so vCPU accounting keeps working on hosts catalogued the old w
 before the agent reports.
 """
 
+import math
+
 import frappe
+
+from atlas.atlas.sizes import SHARE_UNIT
 
 # vCPUs per DigitalOcean size slug. Legacy fallback for the CPU axis when the
 # agent hasn't stamped `vcpus_total`. Hand-maintained; a missing slug (and no
@@ -51,6 +55,18 @@ def overprovision_factor() -> float:
 	and disk are hard fits."""
 	value = frappe.db.get_single_value("Atlas Settings", "overprovision_factor")
 	return float(value) if value else 1.0
+
+
+def host_memory_reserve_megabytes() -> int:
+	"""MB carved off every host's memory budget before placement/resize accounting.
+
+	`Atlas Settings.host_memory_reserve_megabytes`, default 1024 when unset. Guest
+	RAM must never pack to 100% of MemTotal: the host OS, per-VM Firecracker/jailer
+	overhead, and thin-pool metadata live in the same RAM, so packing to MemTotal
+	OOMs the host. Subtracted from the memory axis's effective budget only (the raw
+	`total` stays physical); CPU and disk are unaffected. An explicit 0 disables it."""
+	value = frappe.db.get_single_value("Atlas Settings", "host_memory_reserve_megabytes")
+	return int(value) if value is not None else 1024
 
 
 def _axis(total: float | None, effective: float | None, used: float) -> dict:
@@ -127,26 +143,71 @@ def capacity_for_server(server: str) -> dict:
 		],
 	)
 	factor = overprovision_factor()
+	# Memory: hard fit, but never packable to the full physical total — the host OS
+	# + per-VM VMM overhead live in the same RAM, so effective = total − reserve
+	# (clamped ≥ 0). The raw total stays physical for display.
+	memory_reserve = host_memory_reserve_megabytes()
+	memory_effective = max(0, memory_total - memory_reserve) if memory_total is not None else None
+	cpu_axis = _axis(
+		total=vcpus_total,
+		effective=(vcpus_total * factor) if vcpus_total is not None else None,
+		used=sum(float(v.cpu_max_cores or v.vcpus or 0) for v in vms),
+	)
+	memory_axis = _axis(
+		total=memory_total,
+		effective=memory_effective,  # total − host_memory_reserve, no oversubscription
+		used=sum(int(v.memory_megabytes or 0) for v in vms),
+	)
+	disk_axis = _axis(
+		total=disk_total,
+		effective=disk_total,  # no oversubscription
+		used=sum(int(v.disk_gigabytes or 0) + int(v.data_disk_gigabytes or 0) for v in vms),
+	)
+	share = _share_units(cpu_axis, memory_axis, disk_axis)
 	return {
 		"server": server,
 		"size": size,
-		"cpu": _axis(
-			total=vcpus_total,
-			effective=(vcpus_total * factor) if vcpus_total is not None else None,
-			used=sum(float(v.cpu_max_cores or v.vcpus or 0) for v in vms),
-		),
-		"memory": _axis(
-			total=memory_total,
-			effective=memory_total,  # no oversubscription
-			used=sum(int(v.memory_megabytes or 0) for v in vms),
-		),
-		"disk": _axis(
-			total=disk_total,
-			effective=disk_total,  # no oversubscription
-			used=sum(int(v.disk_gigabytes or 0) + int(v.data_disk_gigabytes or 0) for v in vms),
-		),
+		"cpu": cpu_axis,
+		"memory": memory_axis,
+		"disk": disk_axis,
+		# Share-unit view of this host (None when no axis is measured) — how many
+		# Shared-1x slots fit, how many are used, and what each axis strands.
+		"share_units": share["share_units"] if share else None,
+		"stranded": share["stranded"] if share else None,
 		"pool_data_percent": s.get("pool_data_percent"),  # advisory alert signal
 		"virtual_machine_count": len(vms),
+	}
+
+
+def _share_units(cpu_axis: dict, memory_axis: dict, disk_axis: dict) -> dict | None:
+	"""The share-unit view of a host: sellable Shared-1x slots and per-axis stranding.
+
+	One share unit is `sizes.SHARE_UNIT` (a Shared 1x). Because every preset is an
+	exact whole-number multiple of it (spec/24), a host holds
+	`floor(min over measured axes of effective/unit)` units, and any mix of preset
+	VMs whose unit-sum ≤ that fits — packing is one-dimensional. `used` is the max
+	over measured axes of `ceil(used/unit)` (the binding axis, rounded up so a
+	partly-used unit is spent). `stranded` per measured axis is
+	`effective − units_total × unit_cost`: the resources the *bottleneck* axis makes
+	unsellable at full subscription — the shape-mismatch waste an operator compares
+	host shapes by. Reporting only, never a placement input. Returns None when no
+	axis is measured (nothing to count against)."""
+	priced = {
+		"cpu": (cpu_axis, SHARE_UNIT["cpu_max_cores"]),
+		"memory": (memory_axis, SHARE_UNIT["memory_megabytes"]),
+		"disk": (disk_axis, SHARE_UNIT["disk_gigabytes"]),
+	}
+	measured = {
+		key: (axis, unit) for key, (axis, unit) in priced.items() if axis["effective"] is not None
+	}
+	if not measured:
+		return None
+	total = min(int(axis["effective"] // unit) for axis, unit in measured.values())
+	used = max((math.ceil(axis["used"] / unit) for axis, unit in measured.values()), default=0)
+	stranded = {key: axis["effective"] - total * unit for key, (axis, unit) in measured.items()}
+	return {
+		"share_units": {"total": total, "used": used, "free": total - used},
+		"stranded": stranded,
 	}
 
 
@@ -186,11 +247,38 @@ def cluster_capacity() -> dict:
 		order_by="creation asc",
 	)
 	servers = [capacity_for_server(name) for name in names]
+	fleet_share = _sum_share_units(servers)
 	return {
 		"server_count": len(servers),
 		"cpu": _sum_axis(servers, "cpu"),
 		"memory": _sum_axis(servers, "memory"),
 		"disk": _sum_axis(servers, "disk"),
+		# Fleet share-unit roll-up (None when no server is measured): summed sellable
+		# slots and stranded resources across measured hosts — the shape-comparison
+		# line the operator reads to decide what host shapes to buy next.
+		"share_units": fleet_share["share_units"] if fleet_share else None,
+		"stranded": fleet_share["stranded"] if fleet_share else None,
 		"virtual_machine_count": sum(s["virtual_machine_count"] for s in servers),
 		"servers": servers,
+	}
+
+
+def _sum_share_units(servers: list[dict]) -> dict | None:
+	"""Fleet roll-up of per-server share units + stranded resources.
+
+	Sums only servers with a measured `share_units` block; an uncatalogued host is
+	unlimited and uncountable, so it is left out (the totals are a floor, like
+	`_sum_axis`). Returns None when no server is measured."""
+	measured = [s for s in servers if s.get("share_units")]
+	if not measured:
+		return None
+	total = sum(s["share_units"]["total"] for s in measured)
+	used = sum(s["share_units"]["used"] for s in measured)
+	stranded: dict[str, float] = {}
+	for s in measured:
+		for axis_key, value in s["stranded"].items():
+			stranded[axis_key] = stranded.get(axis_key, 0) + value
+	return {
+		"share_units": {"total": total, "used": used, "free": total - used},
+		"stranded": stranded,
 	}
