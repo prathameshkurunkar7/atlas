@@ -1,0 +1,34 @@
+@import 'frappe-ui/style.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* The dashboard is a read-only ls/cat. It leans on frappe-ui's neutral tokens
+   (--ink-gray-N for text, --surface-* for backgrounds, --outline-gray-1 for the
+   rare divider) and nothing else — no colour, one font, two weights. */
+/* The page surface. frappe-ui emits the --surface-white / --ink-gray-N vars but
+   its `bg-surface-white` utility doesn't generate reliably in the published
+   build, so we set the background here and let the vars carry the light/dark
+   flip. Text colour still comes from the (working) text-ink-* utilities. */
+:root {
+  color-scheme: light;
+  --page-bg: rgb(255 255 255);
+}
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --page-bg: rgb(20 20 23); /* frappe-ui dark gray-900 */
+}
+
+body {
+  font-family: 'InterVar', ui-sans-serif, system-ui, sans-serif;
+  background-color: var(--page-bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Tabular figures line up UUIDs, addresses and sizes in the tables. */
+.mono {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+  font-family: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+}
