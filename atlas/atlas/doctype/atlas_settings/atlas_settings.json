@@ -21,6 +21,8 @@
   "overprovision_factor",
   "placement_headroom_percent",
   "host_memory_reserve_megabytes",
+  "placement_consolidation_enabled",
+  "max_consolidation_migrations",
   "section_break_tcp_proxy",
   "tcp_port_pool",
   "section_break_ssh",
@@ -133,6 +135,21 @@
    "default": "1024",
    "non_negative": 1,
    "description": "Subtracted from each host's memory budget before placement and resize accounting (effective = total − reserve, clamped ≥ 0). Guest RAM must never pack to 100% of MemTotal — the host OS, per-VM Firecracker/jailer overhead, and thin-pool metadata live there too, and packing to MemTotal OOMs the host."
+  },
+  {
+   "fieldname": "placement_consolidation_enabled",
+   "fieldtype": "Check",
+   "label": "Consolidate on No-Capacity",
+   "default": "1",
+   "description": "When placing a NEW VM finds no host with room, migrate a few small VMs off one host onto others to free a contiguous slot (defragmentation-on-arrival, spec/25 case 3). The migrations run in the background; the create is told to retry (ConsolidationInProgressError) and lands once room appears. Off = fail loud with NoCapacityError instead. Only ever moves small VMs that are safe to move (no attached public IPv4, no in-flight migration, same provider as the target)."
+  },
+  {
+   "fieldname": "max_consolidation_migrations",
+   "fieldtype": "Int",
+   "label": "Max Consolidation Migrations",
+   "default": "3",
+   "non_negative": 1,
+   "description": "The most VMs a single consolidation pass may move to free room for one arrival — the \"a few\" in \"migrate a few small VMs\". A plan that would need more moves than this on every host is rejected and the arrival fails with NoCapacityError. Keeps defragmentation bounded so a full fleet can't trigger a migration storm."
   },
   {
    "fieldname": "section_break_tcp_proxy",

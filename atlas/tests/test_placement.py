@@ -7,11 +7,19 @@ no-capacity / ambiguous-image boundaries throw cleanly. No host — pure control
 logic (the after_insert provision enqueue is a no-op under frappe.in_test).
 """
 
+from unittest.mock import patch
+
 import frappe
 from frappe.tests import IntegrationTestCase
 
-from atlas.atlas.placement import NoCapacityError
-from atlas.tests.fixtures import make_image, make_provider, make_server
+from atlas.atlas import placement
+from atlas.atlas.placement import (
+	ConsolidationInProgressError,
+	NoCapacityError,
+	default_server,
+	plan_consolidation,
+)
+from atlas.tests.fixtures import make_image, make_provider, make_server, make_virtual_machine
 
 USER_EMAIL = "atlas-placement-user@example.com"
 
@@ -51,6 +59,10 @@ class TestPlacement(IntegrationTestCase):
 		# feasibility-boundary tests below stamp small totals and mean the raw budget).
 		frappe.db.set_single_value("Atlas Settings", "host_memory_reserve_megabytes", 0)
 		frappe.db.set_single_value("Atlas Settings", "placement_headroom_percent", 0)
+		# Consolidation on with a generous cap, so a leaked 0 from the disabled test
+		# can't turn a later consolidation test into a silent NoCapacityError.
+		frappe.db.set_single_value("Atlas Settings", "placement_consolidation_enabled", 1)
+		frappe.db.set_single_value("Atlas Settings", "max_consolidation_migrations", 3)
 		# Wipe VMs left by other tests: servers are shared by title, so a stray
 		# VM on the reused server would count against its vCPU budget and skew
 		# the capacity-boundary tests below.
@@ -353,3 +365,135 @@ class TestPlacement(IntegrationTestCase):
 		frappe.set_user(_acting_user())
 		vm = self._new_machine()
 		self.assertEqual(vm.image, image_b.name, "configured default wins over ambiguity")
+
+	# --- consolidation: free a host by migrating a few small VMs (spec/25 case 3) ---
+
+	def _place_vm(self, server, memory, disk=4, status="Stopped", **overrides):
+		"""A VM pinned to `server` at a given size, in a migratable state. Explicit
+		server + image means apply_user_defaults is a no-op (no placement recursion)."""
+		image = make_image("atlas-placement-image")
+		vm = make_virtual_machine(
+			server, image, memory_megabytes=memory, disk_gigabytes=disk, **overrides
+		)
+		vm.db_set("status", status)
+		return vm
+
+	def _make_migration(self, vm, source, target, status="Hydrating"):
+		"""A non-terminal migration row of `vm` from `source` to `target`. Forces the
+		address scheme so before_insert never has to probe the provider."""
+		migration = frappe.get_doc(
+			{
+				"doctype": "Virtual Machine Migration",
+				"virtual_machine": vm.name,
+				"source_server": source.name,
+				"target_server": target.name,
+				"status": status,
+			}
+		)
+		migration.flags.keep_address_forced = True
+		return migration.insert(ignore_permissions=True)
+
+	def _fragmented_pair(self):
+		"""Two equal 4096 MB (RAM-only) hosts, each 2560 MB full (a 2048 + a small 512),
+		so 1536 MB is free on each — no host fits a 2048 MB arrival, but migrating one
+		512 off a host frees a contiguous 2048 slot. Returns (host_a, host_b)."""
+		host_a = self._measured_server("atlas-consolidate-a", 31, memory_megabytes_total=4096)
+		host_b = self._measured_server("atlas-consolidate-b", 32, memory_megabytes_total=4096)
+		self._place_vm(host_a, 2048)
+		self._place_vm(host_a, 512)
+		self._place_vm(host_b, 2048)
+		self._place_vm(host_b, 512)
+		return host_a, host_b
+
+	def test_plan_consolidation_frees_a_host_with_one_small_move(self) -> None:
+		host_a, host_b = self._fragmented_pair()
+		plan = plan_consolidation({"cpu": 0.0625, "memory": 2048, "disk": 4})
+		self.assertIsNotNone(plan, "a scattered fleet can be defragmented for the arrival")
+		recipient, moves = plan
+		self.assertEqual(len(moves), 1, "one small move is enough to free a host")
+		vm_name, target = moves[0]
+		self.assertNotEqual(recipient, target, "the evicted VM moves to a DIFFERENT host")
+		self.assertEqual(
+			frappe.db.get_value("Virtual Machine", vm_name, "memory_megabytes"),
+			512,
+			"it moves a SMALL VM, not the big one",
+		)
+		self.assertIn(recipient, (host_a.name, host_b.name))
+
+	def test_default_server_signals_consolidation_and_enqueues(self) -> None:
+		self._fragmented_pair()
+		with patch("frappe.enqueue") as enqueue:
+			with self.assertRaises(ConsolidationInProgressError):
+				default_server(0.0625, 2048, 4)
+			enqueue.assert_called_once()
+			self.assertEqual(enqueue.call_args.args[0], "atlas.atlas.placement.consolidate")
+
+	def test_consolidate_triggers_the_planned_migration(self) -> None:
+		self._fragmented_pair()
+		calls = []
+		# consolidate() commits per move so one migration persists independently of the
+		# next; stub the commit so that real commit can't break this IntegrationTestCase's
+		# rollback isolation (it would leak the setUp fleet into later tests).
+		with (
+			patch.object(placement, "_start_migration", lambda vm, target: calls.append((vm, target))),
+			patch("frappe.db.commit"),
+		):
+			result = placement.consolidate(0.0625, 2048, 4)
+		self.assertEqual(len(calls), 1, "the planned move is actually triggered")
+		self.assertEqual(result["triggered"][0]["virtual_machine"], calls[0][0])
+
+	def test_consolidation_disabled_fails_loud(self) -> None:
+		self._fragmented_pair()
+		frappe.db.set_single_value("Atlas Settings", "placement_consolidation_enabled", 0)
+		self.assertIsNone(plan_consolidation({"cpu": 0.0625, "memory": 2048, "disk": 4}))
+		with patch("frappe.enqueue") as enqueue:
+			with self.assertRaises(NoCapacityError):
+				default_server(0.0625, 2048, 4)
+			enqueue.assert_not_called()
+		# Fail-loud must be the plain type, not the "retry, room is coming" signal.
+		try:
+			default_server(0.0625, 2048, 4)
+		except ConsolidationInProgressError:
+			self.fail("disabled consolidation must raise NoCapacityError, not the retry signal")
+		except NoCapacityError:
+			pass
+
+	def test_single_host_cannot_consolidate(self) -> None:
+		# One Active host with nowhere to move VMs to → no plan, plain NoCapacityError.
+		host = self._measured_server("atlas-consolidate-solo", 33, memory_megabytes_total=2048)
+		self._place_vm(host, 2048)
+		self.assertIsNone(plan_consolidation({"cpu": 0.0625, "memory": 512, "disk": 4}))
+		with self.assertRaises(NoCapacityError):
+			default_server(0.0625, 512, 4)
+
+	def test_in_flight_drain_waits_without_re_enqueuing(self) -> None:
+		# A prior consolidation is already draining host A (its small VM migrates to B).
+		# A fresh 2048 arrival must be told to WAIT (ConsolidationInProgressError) rather
+		# than launch another migration — the idempotency that survives Central's retries.
+		host_a = self._measured_server("atlas-consolidate-a", 31, memory_megabytes_total=4096)
+		host_b = self._measured_server("atlas-consolidate-b", 32, memory_megabytes_total=4096)
+		self._place_vm(host_a, 2048)
+		small_a = self._place_vm(host_a, 512)
+		self._place_vm(host_b, 1536)
+		self._place_vm(host_b, 1024)
+		self._make_migration(small_a, host_a, host_b)
+		with patch("frappe.enqueue") as enqueue:
+			with self.assertRaises(ConsolidationInProgressError):
+				default_server(0.0625, 2048, 4)
+			enqueue.assert_not_called()
+
+	def test_consolidation_skips_vms_with_public_ipv4(self) -> None:
+		# A VM with an attached Reserved IP must never be picked — moving it would
+		# silently release inbound v4. Here the small 512 on host A is the ONLY move
+		# that could free a host (host B's single 2560 VM has nowhere to go), so pinning
+		# it with a public IPv4 must leave the fleet unconsolidatable.
+		host_a = self._measured_server("atlas-consolidate-a", 31, memory_megabytes_total=4096)
+		host_b = self._measured_server("atlas-consolidate-b", 32, memory_megabytes_total=4096)
+		self._place_vm(host_a, 2048)
+		pinned = self._place_vm(host_a, 512)  # free_a = 1536
+		self._place_vm(host_b, 2560)  # free_b = 1536, single VM too big to re-home
+		# Sanity: while it is movable, that 512 DOES free host A for a 2048 arrival.
+		self.assertIsNotNone(plan_consolidation({"cpu": 0.0625, "memory": 2048, "disk": 4}))
+		# Pin it with a public IPv4 → now nothing is safely movable → no plan.
+		pinned.db_set("public_ipv4", "203.0.113.5")
+		self.assertIsNone(plan_consolidation({"cpu": 0.0625, "memory": 2048, "disk": 4}))
