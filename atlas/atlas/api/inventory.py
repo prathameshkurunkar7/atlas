@@ -2,8 +2,9 @@
 
 Central pulls the authoritative VM list per Atlas to correct any drift the event
 push missed. One row per tenant-tagged VM: its id, the owning `team`, status, and
-gateway_url. Operator-only (Central calls with its service operator key);
-untenanted operator VMs are never returned.
+— for a bench VM — the front-door handoff read through its owning Pilot.
+Operator-only (Central calls with its service operator key); untenanted operator
+VMs are never returned.
 """
 
 import frappe
@@ -33,19 +34,37 @@ def tenant_vms(team: str | None = None) -> list[dict]:
 			"public_ipv4",
 		],
 	)
-	# Same shape as central_report._vm_payload so push and pull stay in lockstep.
-	return [
-		{
-			"name": vm.name,
-			"team": vm.tenant,
-			"title": vm.title,
-			"status": vm.status,
-			"vcpus": vm.vcpus,
-			"memory_megabytes": vm.memory_megabytes,
-			"disk_gigabytes": vm.disk_gigabytes,
-			"ipv6_address": vm.ipv6_address,
-			"public_ipv4": vm.public_ipv4,
-			"gateway_url": None,
-		}
-		for vm in vms
-	]
+
+	# The front door lives on the aggregate that created the VM — a Pilot (bench) or a
+	# Site (self-serve) — not on the VM. Fold it in per VM via the shared resolver so a
+	# bench/site VM's row carries gateway_url (`https://<fqdn>`) and, once the aggregate is
+	# Running, the login handoff. A VM with no front door (proxy, operator machine) leaves
+	# all three None. Resolving through EITHER aggregate is what stops a Site-backed VM
+	# (create_site) from reconciling into a login-less Asset (spec/14-self-serve.md).
+	#
+	# Same shape as central_report._vm_payload / _pilot_vm_payload so push and pull stay
+	# in lockstep — including the login handoff (gateway_url + the login URL/expiry, the
+	# latter only once Running, exactly as the event gates them). The reconcile is the
+	# backstop if a status_changed event is lost, so it must carry them.
+	from atlas.atlas.front_door import front_door_for_vm
+
+	rows = []
+	for vm in vms:
+		front_door = front_door_for_vm(vm.name)
+		rows.append(
+			{
+				"name": vm.name,
+				"team": vm.tenant,
+				"title": vm.title,
+				"status": vm.status,
+				"vcpus": vm.vcpus,
+				"memory_megabytes": vm.memory_megabytes,
+				"disk_gigabytes": vm.disk_gigabytes,
+				"ipv6_address": vm.ipv6_address,
+				"public_ipv4": vm.public_ipv4,
+				"gateway_url": front_door.gateway_url if front_door else None,
+				"login_url": front_door.login_url if front_door else None,
+				"login_url_expires_at": front_door.login_url_expires_at if front_door else None,
+			}
+		)
+	return rows

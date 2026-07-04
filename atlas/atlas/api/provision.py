@@ -3,10 +3,18 @@ down a tenant VM.
 
 Central owns end-users; it talks to Atlas as the operator (token auth as the
 Central service user). It supplies *what* to run (the tenant it belongs to + the
-size), never *where* — placement (server) and the base image are Atlas's
-concern, filled by `VirtualMachine.before_insert` via `apply_user_defaults`. The
-insert's `after_insert` enqueues the provision job, so the VM provisions itself
-through the configured provider (the `fake` provider in dev).
+size), never *where* — placement (server) and the base image are Atlas's concern.
+
+WIRE SHAPE (unchanged) vs. WHAT'S BEHIND IT (changed): Central still calls
+`create_vm` and mirrors a VM-shaped row — `name`, `ipv6_address`, `gateway_url`,
+`login_url`, etc. But a *bench* VM (a baked-image tenant environment) is now owned
+by a `Pilot` DocType, not the `Virtual Machine` itself: the bench provision (boot a
+bench image, deploy in-guest, mint the one-click login URL) lives on the Pilot so
+the Virtual Machine stays a pure microVM. So `create_vm` creates a **Pilot** (which
+creates and owns the VM), and the bench fields in the mirror row — `gateway_url`
+(`https://<subdomain>.<region domain>`) and, once Running, `login_url` + its expiry
+— are read back THROUGH the Pilot. The plain VM facts (name, ipv6) are read through
+the VM the Pilot created. Central sees the same VM-shaped payload as before.
 
 This is the write half of the Central↔Atlas tenancy contract whose read half is
 the Tenant DocType (resources stamped with the owning `team`). It returns the VM
@@ -19,7 +27,6 @@ from __future__ import annotations
 import frappe
 
 from atlas.atlas.doctype.tenant.tenant import ensure_tenant
-from atlas.bootstrap import load_vm_ssh_public_key
 
 
 @frappe.whitelist()
@@ -31,38 +38,48 @@ def create_vm(
 	disk_gigabytes: int,
 	email: str | None = None,
 	cpu_max_cores: float | None = None,
-	ssh_public_key: str | None = None,
 ) -> dict:
-	"""Provision a VM for a Central team and return its mirror row.
+	"""Provision a bench VM for a Central team and return its (VM-shaped) mirror row.
 
 	`team` is the Central `Team.name`; `email` seeds the Tenant on first use (the
-	team owner). Resources come from the size Central picked. Placement, image,
-	ipv6, cpu/mac defaults and auto-provisioning are all handled by the Virtual
-	Machine controller — we only insert. Runs with `ignore_permissions`: this is
-	operator orchestration authorized by the Central token, not desk RBAC.
+	team owner). Resources come from the size Central picked. `title` is the single
+	DNS label Central chose — it doubles as the pilot's subdomain: Atlas fronts the
+	bench at `<title>.<region domain>` (derived, never stored — the same Contract-A
+	rule `create_site` uses, so region/domain never leave Atlas).
+
+	Creates a `Pilot`, which owns the backing VM: the Pilot's `before_insert`
+	validates the label (a bad one fails at the boundary) and its `after_insert`
+	creates the VM synchronously (so its identity is available for this return) and
+	enqueues the boot→deploy→mint job. Runs with `ignore_permissions`: operator
+	orchestration authorized by the Central token, not desk RBAC.
 	"""
 	if not team:
 		frappe.throw("team is required.")
 
 	tenant = ensure_tenant(team, email)
 
-	vm = frappe.get_doc(
-		{
-			"doctype": "Virtual Machine",
-			"title": title or "server",
-			"tenant": tenant,
-			"vcpus": int(vcpus),
-			"memory_megabytes": int(memory_megabytes),
-			"disk_gigabytes": int(disk_gigabytes),
-			"ssh_public_key": ssh_public_key or load_vm_ssh_public_key(),
-		}
-	)
-
+	spec = {
+		"vcpus": int(vcpus),
+		"memory_megabytes": int(memory_megabytes),
+		"disk_gigabytes": int(disk_gigabytes),
+		# Placement is still a WIP pin: this server has the bench image. The Pilot's
+		# _provision_backing_vm falls back to the default image when none is set.
+		"server": "5d0943c8-4e43-48ad-b652-3f181e22fc4d",
+	}
 	if cpu_max_cores:
-		vm.cpu_max_cores = float(cpu_max_cores)
-	vm.insert(ignore_permissions=True)
+		spec["cpu_max_cores"] = float(cpu_max_cores)
 
-	# Shape matches central.atlas._mirror_vm so Central can upsert verbatim.
+	pilot = frappe.get_doc({"doctype": "Pilot", "subdomain": title or "server", "tenant": tenant})
+	# The VM spec rides the insert (flags → after_insert) to the VM the Pilot creates;
+	# it is never persisted on the Pilot row, which stores only bench-level state.
+	pilot.flags.vm_spec = spec
+	pilot.insert(ignore_permissions=True)
+
+	# The Pilot created its VM in after_insert; read the plain VM facts through the
+	# link and the bench fields off the Pilot. Shape matches central.atlas._mirror_vm
+	# so Central can upsert verbatim. login_url is minted after boot (auto_provision),
+	# so it (and its expiry) are empty here — Central learns them from the event.
+	vm = frappe.get_doc("Virtual Machine", pilot.virtual_machine)
 	return {
 		"name": vm.name,
 		"team": team,
@@ -73,8 +90,37 @@ def create_vm(
 		"disk_gigabytes": vm.disk_gigabytes,
 		"ipv6_address": vm.ipv6_address,
 		"public_ipv4": vm.public_ipv4,
-		"gateway_url": None,
+		"gateway_url": pilot.gateway_url,
 	}
+
+
+@frappe.whitelist()
+def regenerate_vm_login(name: str) -> dict:
+	"""Re-mint a bench VM's one-click login URL and return its (VM-shaped) mirror row.
+
+	Central calls this on Open when the Asset's stored URL has expired or never
+	arrived (the admin JWT lasts 5 minutes, so a login is almost always a fresh mint).
+	Central knows the VM only — it mirrors VMs — but the login URL lives on the front
+	door that owns the VM (a `Pilot` for a bench, a `Site` for a self-serve site), not
+	the pure-microVM `Virtual Machine`. So this resolves the VM to its front door,
+	re-mints in the guest via its `regenerate_login_url` (re-stamps + commits), then
+	returns the VM-shaped payload — always the Asset shape Central re-reads, whichever
+	aggregate backs the VM (the Site's own regenerate returns a site-shaped mirror; the
+	Asset caller needs the VM shape keyed by VM id, so we re-derive it here).
+
+	Raises if the VM has no front door (a plain proxy/operator VM has no login to
+	regenerate) — Central only ever calls this for a bench/site Asset.
+	"""
+	from atlas.atlas.central_report import _vm_payload
+	from atlas.atlas.front_door import front_door_for_vm
+
+	front_door = front_door_for_vm(name)
+	if front_door is None:
+		frappe.throw(f"No bench or site front door backs VM {name}.")
+	front_door.regenerate_login_url()
+	# Re-read the VM: its front door just committed the fresh login_url, and _vm_payload
+	# reads the handoff back through that front door — the VM-shaped Asset mirror row.
+	return _vm_payload(frappe.get_doc("Virtual Machine", name))
 
 
 @frappe.whitelist()

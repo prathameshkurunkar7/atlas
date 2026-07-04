@@ -402,6 +402,15 @@ def _set_status(site, status: str) -> None:
 	if stamp_field:
 		site.db_set(stamp_field, frappe.utils.now_datetime())
 	site.db_set("status", status)
+	# db_set runs on_change, NOT on_update, so the on_site_update doc_event never
+	# fires for these transitions — emit the status_changed explicitly (same gap the
+	# Pilot closes with report_pilot_status). Its delivery is enqueue_after_commit, so
+	# it rides the commit just below. Without this the mirror only ever sees the initial
+	# Pending (site.created + the insert's on_update) and, with no site reconcile pull,
+	# stays stuck Pending forever.
+	from atlas.atlas.central_report import report_site_status
+
+	report_site_status(site)
 	# nosemgrep: frappe-manual-commit -- background job: commit each status transition so Central's poll sees it cross-transaction, the status_changed event delivers, and progress survives a crash mid-provision
 	frappe.db.commit()
 
