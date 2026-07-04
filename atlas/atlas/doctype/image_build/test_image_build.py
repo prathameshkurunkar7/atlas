@@ -49,7 +49,7 @@ class TestImageBuildInsert(IntegrationTestCase):
 
 	def test_before_insert_fills_title_and_status(self) -> None:
 		build = _new_build("bench-v16")
-		self.assertEqual(build.title, "Golden bench v16")
+		self.assertEqual(build.title, "Bench v16")
 		self.assertEqual(build.status, "Draft")
 		# Base image defaulted from Atlas Settings / the active image.
 		self.assertTrue(build.base_image)

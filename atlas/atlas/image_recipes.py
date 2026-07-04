@@ -166,7 +166,7 @@ _BENCH_MEMORY_MB = 2048
 # Frappe release needs a newer bench-cli. Kept in lockstep with bench/build.sh's
 # BENCH_CLI_REF default (the value a direct `build.sh` run uses with no env override).
 _BENCH_CLI_REF = (
-	"fc89e51031739199861556c4b1592d38163821bf"  # main @ 2026-07-01 (adds generate-admin-session, PR #117)
+	"486005a0beb949d1e02c316603f6d318c181620e"  # main @ 2026-07-03 (fixes ?sid= login-url sign-in, PR #159)
 )
 
 
@@ -222,7 +222,7 @@ RECIPES: dict[str, "ImageRecipe"] = {
 	# per server.
 	"bench-v16": _bench_variant(
 		"bench-v16",
-		"Golden bench v16",
+		"Bench v16",
 		frappe_branch="version-16",
 		erpnext_branch="version-16",
 		python_version="3.14",
@@ -235,7 +235,7 @@ RECIPES: dict[str, "ImageRecipe"] = {
 	# (spec/15 release gate).
 	"bench-v15": _bench_variant(
 		"bench-v15",
-		"Golden bench v15",
+		"Bench v15",
 		frappe_branch="version-15",
 		erpnext_branch="version-15",
 		python_version="3.11",
@@ -246,7 +246,7 @@ RECIPES: dict[str, "ImageRecipe"] = {
 	# since the inputs float.
 	"bench-nightly": _bench_variant(
 		"bench-nightly",
-		"Golden bench nightly (develop)",
+		"Bench nightly (develop)",
 		frappe_branch="develop",
 		erpnext_branch="develop",
 		python_version="3.14",
@@ -267,7 +267,7 @@ RECIPES: dict[str, "ImageRecipe"] = {
 	# ordinary `image` field. ---
 	"bench-v16-admin": _bench_variant(
 		"bench-v16-admin",
-		"Golden bench v16 (admin)",
+		"Bench v16 (admin)",
 		frappe_branch="version-16",
 		erpnext_branch="version-16",
 		python_version="3.14",
@@ -275,7 +275,7 @@ RECIPES: dict[str, "ImageRecipe"] = {
 	),
 	"bench-v15-admin": _bench_variant(
 		"bench-v15-admin",
-		"Golden bench v15 (admin)",
+		"Bench v15 (admin)",
 		frappe_branch="version-15",
 		erpnext_branch="version-15",
 		python_version="3.11",
@@ -283,7 +283,7 @@ RECIPES: dict[str, "ImageRecipe"] = {
 	),
 	"bench-nightly-admin": _bench_variant(
 		"bench-nightly-admin",
-		"Golden bench nightly admin (develop)",
+		"Bench nightly admin (develop)",
 		frappe_branch="develop",
 		erpnext_branch="develop",
 		python_version="3.14",

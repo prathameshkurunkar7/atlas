@@ -40,7 +40,7 @@ set -euo pipefail
 # proxy/build.sh follows). The Frappe branch + the production/MariaDB/ZFS shape
 # are pinned in bench.toml.
 #
-# Pinned at fc89e51 (main @ 2026-07-01). This ref carries the four things this
+# Pinned at 1e0332b (main @ 2026-07-03). This ref carries the five things this
 # build/deploy flow now depends on: (1) the two-path install.sh — run as root it
 # creates the bench user + sudoers, run as the user it installs bench-cli (so we no
 # longer hand-roll useradd/sudoers); (2) `bench rename-site` (deploy-site.py renames
@@ -48,14 +48,16 @@ set -euo pipefail
 # the deploy); (3) nginx emits `listen [::]:80` for every site + admin vhost (since
 # dd14ad4), so the Atlas v6-only inbound path is served by bench-cli itself — no
 # v6-listener / default_server surgery here; (4) `bench generate-admin-session`
-# (Pilot #117, merged as 35ae14e) — the admin-mode login-URL handoff.
+# (Pilot #117, merged as 35ae14e) — the admin-mode login-URL handoff; (5) `bench
+# set-central-config` (Pilot #150) — the Central endpoint/token handoff deploy-site.py
+# writes into bench.toml. An older pin dies at that step with "No such command".
 #
 # BENCH_CLI_REF / ERPNEXT_BRANCH are ENV OVERRIDES: the controller
 # (atlas.atlas.image_builder) exports them per recipe so one committed build.sh
 # bakes any Frappe version (v15 / v16 / nightly). The Frappe branch + Python
 # version are pinned in bench.toml (rendered by the controller before upload).
 # The defaults below keep a direct `build.sh` run (no env) reproducible at v16. ---
-BENCH_CLI_REF="${BENCH_CLI_REF:-fc89e51031739199861556c4b1592d38163821bf}"  # default: main @ 2026-07-01 (adds generate-admin-session, PR #117)
+BENCH_CLI_REF="${BENCH_CLI_REF:-486005a0beb949d1e02c316603f6d318c181620e}"  # default: main @ 2026-07-03 (fixes ?sid= login-url sign-in, PR #159)
 ERPNEXT_BRANCH="${ERPNEXT_BRANCH:-version-16}"  # default: v16; controller overrides for v15 / develop
 
 BENCH_USER="frappe"
