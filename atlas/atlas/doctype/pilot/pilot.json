@@ -12,6 +12,7 @@
   "column_break_header",
   "status",
   "build_mode",
+  "attached",
   "section_break_backing",
   "virtual_machine",
   "column_break_backing",
@@ -66,6 +67,15 @@
    "fieldname": "build_mode",
    "fieldtype": "Data",
    "label": "Build Mode",
+   "read_only": 1,
+   "set_only_once": 1
+  },
+  {
+   "default": "0",
+   "description": "Set when this Pilot was ATTACHED to a VM another aggregate owns (a self-serve Site's backing VM) rather than creating its own. An attached Pilot only wires the admin console (vhost + login mint) on the shared VM; it never provisions or terminates the VM — the owning Site does. Set once at insert by Site.auto_provision; a Central create_vm Pilot leaves it 0 (it owns its VM).",
+   "fieldname": "attached",
+   "fieldtype": "Check",
+   "label": "Attached",
    "read_only": 1,
    "set_only_once": 1
   },

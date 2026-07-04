@@ -55,6 +55,7 @@ class Pilot(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
+		attached: DF.Check
 		build_mode: DF.Data | None
 		login_url: DF.SmallText | None
 		login_url_expires_at: DF.Datetime | None
@@ -124,7 +125,22 @@ class Pilot(Document):
 		runs in the background job (queue=long because it SSHes). enqueue_after_commit
 		so the worker only starts once this insert's transaction has committed —
 		otherwise auto_provision can look up the pilot (or its VM) before the rows
-		exist."""
+		exist.
+
+		ATTACHED path (a self-serve Site's Pilot, `flags.attach_vm` set): this Pilot
+		binds to a VM the Site already owns, so it neither creates a VM nor enqueues its
+		own job. It only links the shared VM + marks itself attached; the Site's
+		auto_provision drives the admin-console deploy on the already-booted VM
+		(`admin`-mode wiring at the pilot FQDN — the Site owns the VM lifecycle)."""
+		attach_vm = self.flags.get("attach_vm")
+		if attach_vm:
+			self.db_set("attached", 1)
+			self.db_set("virtual_machine", attach_vm)
+			# The attached Pilot serves the bench admin CONSOLE at its FQDN (the VM's own
+			# build_mode is `site` — it serves the customer site at a different FQDN); its
+			# login mint/TTL follows admin mode. See spec/14-self-serve.md.
+			self.db_set("build_mode", "admin")
+			return
 		_provision_backing_vm(self)
 		frappe.enqueue(
 			"atlas.atlas.doctype.pilot.pilot.auto_provision",
@@ -177,7 +193,13 @@ class Pilot(Document):
 			frappe.delete_doc("Subdomain", subdomain, ignore_permissions=True)
 
 	def _terminate_backing_vm(self) -> None:
-		"""Terminate the backing VM if one was created and is not already gone."""
+		"""Terminate the backing VM if one was created and is not already gone.
+
+		No-op when ATTACHED: an attached Pilot shares a VM the owning Site created and
+		tears down — terminating it here would double-terminate (and race the Site's own
+		VM teardown). The attached Pilot's teardown is only its Subdomain + its own row."""
+		if self.attached:
+			return
 		if not self.virtual_machine or not frappe.db.exists("Virtual Machine", self.virtual_machine):
 			return
 		vm = frappe.get_doc("Virtual Machine", self.virtual_machine)
@@ -286,6 +308,42 @@ def auto_provision(pilot_name: str) -> None:
 		raise
 
 
+def deploy_attached(pilot_name: str) -> None:
+	"""Wire the admin console for an ATTACHED Pilot on its (already-booted) shared VM.
+
+	Called by `Site.auto_provision` AFTER the site is serving: the backing VM is up and
+	the Site has done its own site-mode deploy, so this only does the pilot half —
+	the admin-mode wiring at the pilot FQDN (a second nginx vhost on the same guest),
+	mint the admin login URL, create the pilot's Subdomain (the second proxy route → the
+	SAME VM /128), and mark the Pilot Running. It is the attached twin of `auto_provision`
+	minus the VM-boot wait (the Site owns and already waited on the VM).
+
+	Fail loud: a pilot whose admin wiring fails is Failed, not a silently console-less
+	Running — the Site's job surfaces it (and the Site itself still serves)."""
+	pilot = frappe.get_doc("Pilot", pilot_name)
+	if pilot.status != "Pending":
+		return
+	try:
+		result = _deploy(pilot)
+		pilot._stamp_login(result)
+		pilot.db_set("login_url", pilot.login_url)
+		pilot.db_set("login_url_expires_at", pilot.login_url_expires_at)
+		subdomain_name = _create_subdomain(pilot)
+		pilot.db_set("subdomain_doc", subdomain_name)
+		pilot.db_set("status", "Running")
+		# db_set skips on_update, so emit the status event (carrying the login handoff)
+		# explicitly — the same gap auto_provision closes. Its delivery is
+		# enqueue_after_commit, so it rides the Site job's commit.
+		from atlas.atlas.central_report import report_pilot_status
+
+		report_pilot_status(pilot)
+	except Exception:
+		pilot.db_set("status", "Failed")
+		# nosemgrep: frappe-manual-commit -- persist Failed so it survives a rollback (a stuck Pending is indistinguishable from a wiring that never ran)
+		frappe.db.commit()
+		raise
+
+
 def _provision_backing_vm(pilot) -> str:
 	"""Create the backing VM from a bench image and return its name.
 
@@ -356,7 +414,11 @@ def _deploy(pilot) -> dict:
 	vm = frappe.get_doc("Virtual Machine", pilot.virtual_machine)
 	if is_fake_server(vm.server):
 		return {"login_url": f"https://{pilot.bench_fqdn}/app?sid=fake-sid"}
-	return deploy_site(pilot.virtual_machine, pilot.bench_fqdn) or {}
+	# An attached Pilot's build_mode is `admin` (it serves the console at its FQDN) while
+	# the shared VM's build_mode is `site`; pass mode explicitly so the deploy wires the
+	# admin vhost, not another site rename. A stand-alone Pilot passes None → the VM's mode.
+	mode = pilot.build_mode if pilot.attached else None
+	return deploy_site(pilot.virtual_machine, pilot.bench_fqdn, mode=mode) or {}
 
 
 def _create_subdomain(pilot) -> str:
@@ -390,7 +452,8 @@ def _regenerate_login(pilot) -> dict:
 	vm = frappe.get_doc("Virtual Machine", pilot.virtual_machine)
 	if is_fake_server(vm.server):
 		return {"login_url": f"https://{pilot.bench_fqdn}/app?sid=fake-sid"}
-	return regenerate_login(pilot.virtual_machine, pilot.bench_fqdn) or {}
+	mode = pilot.build_mode if pilot.attached else None
+	return regenerate_login(pilot.virtual_machine, pilot.bench_fqdn, mode=mode) or {}
 
 
 def pilot_for_vm(vm_name: str):

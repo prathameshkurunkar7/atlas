@@ -519,3 +519,23 @@ class TestFrontDoorResolvesSite(IntegrationTestCase):
 		self.assertIsNotNone(row, "site-backed VM not returned by tenant_vms")
 		self.assertEqual(row["gateway_url"], f"https://{site.name}")
 		self.assertEqual(row["login_url"], self.login_url)
+
+	def test_asset_prefers_pilot_console_when_one_backs_the_vm(self) -> None:
+		"""A COMPLETED create_site backs its VM with BOTH a Site (customer site) and an
+		attached Pilot (admin console). The Central Asset "Open" resolves the PILOT (a
+		bench admin JWT), not the customer site — front_door_for_vm prefers Pilot. This is
+		the bug fix: the Asset gateway/login point at the console, per spec/14-self-serve.md."""
+		vm, site = self._running_site_backed_vm("both")
+		# Attach a Running admin-mode Pilot to the SAME VM, as Site.auto_provision does.
+		pilot = frappe.get_doc({"doctype": "Pilot", "subdomain": "both-pilot", "tenant": site.tenant})
+		pilot.flags.attach_vm = vm.name
+		pilot.insert(ignore_permissions=True)
+		pilot_login = f"https://both-pilot.{self.ROOT_DOMAIN}/app?sid=admin-jwt"
+		pilot.db_set("login_url", pilot_login)
+		pilot.db_set("login_url_expires_at", "2026-07-05 12:00:00")
+		pilot.db_set("status", "Running")
+		payload = central_report._vm_payload(vm)
+		# The Asset now opens the PILOT console FQDN + admin login, not the site's.
+		self.assertEqual(payload["gateway_url"], f"https://both-pilot.{self.ROOT_DOMAIN}")
+		self.assertEqual(payload["login_url"], pilot_login)
+		self.assertNotEqual(payload["login_url"], self.login_url)

@@ -232,3 +232,88 @@ class TestPilot(IntegrationTestCase):
 	def test_pilot_for_vm_none_for_plain_vm(self) -> None:
 		vm = fixtures.make_virtual_machine(self.server, self.admin_image, title="plain")
 		self.assertIsNone(pilot_module.pilot_for_vm(vm.name))
+
+
+class TestPilotAttached(IntegrationTestCase):
+	"""The ATTACHED Pilot — the admin console a self-serve Site stands up on its OWN
+	backing VM (spec/14-self-serve.md). Unlike a stand-alone Pilot it does NOT create or
+	tear down a VM (the Site owns it); it only binds the shared VM and wires the admin
+	console. `deploy_attached` drives the console wiring on the already-booted VM."""
+
+	def setUp(self) -> None:
+		_ensure_root_domain()
+		frappe.db.set_single_value("Atlas Settings", "ssh_public_key", "ssh-ed25519 AAAAFLEET")
+		self.server = frappe.new_doc("Server")
+		self.server.update(
+			{
+				"title": "attach-test-server",
+				"provider_type": "Fake",
+				"size": fixtures.DEFAULT_DIGITALOCEAN_SIZE,
+				"status": "Active",
+				"ipv4_address": "203.0.113.20",
+				"ipv6_address": "2001:db8:dcba::1",
+				"ipv6_prefix": "2001:db8:dcba::/64",
+				"ipv6_virtual_machine_range": "2001:db8:dcba::/120",
+			}
+		)
+		self.server = self.server.insert(ignore_permissions=True)
+		# The shared VM is a SITE-mode clone (its own build_mode is site); the attached
+		# Pilot serves the admin console at a different FQDN on the same VM.
+		self.site_image = fixtures.make_image("attach-site-image", build_mode="site")
+		self.vm = fixtures.make_virtual_machine(
+			self.server, self.site_image, title="acme", ipv6_address="2001:db8:dcba::9"
+		)
+		for name in frappe.get_all("Pilot", pluck="name"):
+			frappe.delete_doc("Pilot", name, force=1, ignore_permissions=True)
+		for name in frappe.get_all("Subdomain", pluck="name"):
+			frappe.delete_doc("Subdomain", name, force=1, ignore_permissions=True)
+		# deploy_attached commits on its failure path; mock commit to a no-op so nothing
+		# leaks past IntegrationTestCase's per-test rollback (same as TestPilot._drive_provision).
+		self._commit_patch = patch.object(pilot_module.frappe.db, "commit")
+		self._commit_patch.start()
+		self.addCleanup(self._commit_patch.stop)
+
+	def _attached_pilot(self, subdomain: str = "acme-pilot"):
+		pilot = frappe.get_doc(
+			{"doctype": "Pilot", "subdomain": subdomain, "tenant": ensure_tenant(TEAM, TENANT_EMAIL)}
+		)
+		pilot.flags.attach_vm = self.vm.name
+		return pilot.insert(ignore_permissions=True)
+
+	def test_attach_binds_the_vm_without_creating_one(self) -> None:
+		"""after_insert on an attached Pilot links the given VM and marks itself attached,
+		and must NOT call the own-VM provisioner (the Site owns the VM)."""
+		with patch.object(pilot_module, "_provision_backing_vm") as m_prov:
+			pilot = self._attached_pilot()
+		m_prov.assert_not_called()
+		self.assertTrue(pilot.attached)
+		self.assertEqual(pilot.virtual_machine, self.vm.name)
+		# An attached Pilot serves the admin console → build_mode admin (regardless of the
+		# VM's own site build_mode).
+		self.assertEqual(pilot.build_mode, "admin")
+
+	def test_deploy_attached_wires_console_and_routes(self) -> None:
+		"""deploy_attached (called by Site.auto_provision after the site serves) mints the
+		admin login, creates the Pilot's own Subdomain → the shared VM, and marks Running."""
+		pilot = self._attached_pilot()
+		pilot_module.deploy_attached(pilot.name)
+		pilot.reload()
+		self.assertEqual(pilot.status, "Running")
+		self.assertTrue(pilot.login_url)
+		self.assertTrue(pilot.subdomain_doc)
+		sub = frappe.get_doc("Subdomain", pilot.subdomain_doc)
+		self.assertEqual(sub.subdomain, "acme-pilot")
+		self.assertEqual(sub.virtual_machine, self.vm.name)
+
+	def test_attached_terminate_skips_vm_teardown(self) -> None:
+		"""An attached Pilot's terminate drops its Subdomain + marks itself Terminated but
+		must NOT terminate the shared VM (the Site owns it) — no double-terminate."""
+		pilot = self._attached_pilot()
+		pilot_module.deploy_attached(pilot.name)
+		pilot.reload()
+		with patch("atlas.atlas.doctype.virtual_machine.virtual_machine.VirtualMachine.terminate") as m_term:
+			pilot.terminate()
+		pilot.reload()
+		self.assertEqual(pilot.status, "Terminated")
+		m_term.assert_not_called()
+		self.assertNotEqual(frappe.db.get_value("Virtual Machine", self.vm.name, "status"), "Terminated")

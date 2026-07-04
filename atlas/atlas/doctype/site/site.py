@@ -75,6 +75,7 @@ class Site(Document):
 		deploying_started: DF.Datetime | None
 		login_url: DF.SmallText | None
 		login_url_expires_at: DF.Datetime | None
+		pilot: DF.Link | None
 		provisioning_started: DF.Datetime | None
 		running_started: DF.Datetime | None
 		status: DF.Literal["Pending", "Provisioning", "Deploying", "Running", "Failed", "Terminated"]
@@ -179,6 +180,7 @@ class Site(Document):
 		if self.status == "Terminated":
 			frappe.throw(_("Site is already terminated"))
 		self._delete_subdomain()
+		self._terminate_pilot()
 		self._terminate_backing_vm()
 		self.status = "Terminated"
 		self.save(ignore_permissions=True)
@@ -198,6 +200,19 @@ class Site(Document):
 		self.db_set("subdomain_doc", None)
 		if frappe.db.exists("Subdomain", subdomain):
 			frappe.delete_doc("Subdomain", subdomain, ignore_permissions=True)
+
+	def _terminate_pilot(self) -> None:
+		"""Terminate the attached Pilot admin console before the VM (if one was stood up).
+
+		The Pilot is ATTACHED — its own terminate() drops its Subdomain and marks itself
+		Terminated but does NOT touch the VM (the Site owns it, torn down next). So this
+		is safe to call before `_terminate_backing_vm`: no double-terminate. No-op when
+		the site never got a Pilot (failed before the console stage) or it is already gone."""
+		if not self.pilot or not frappe.db.exists("Pilot", self.pilot):
+			return
+		pilot = frappe.get_doc("Pilot", self.pilot)
+		if pilot.status != "Terminated":
+			pilot.terminate()
 
 	def _terminate_backing_vm(self) -> None:
 		"""Terminate the backing VM if one was created and is not already gone."""
@@ -362,6 +377,15 @@ def auto_provision(
 		clock.stage("create Subdomain (proxy route)")
 		subdomain_name = _create_subdomain(site, vm_name)
 		site.db_set("subdomain_doc", subdomain_name)
+		# Stand up the bench admin console (a Pilot) on this SAME backing VM, fronted at
+		# `<subdomain>-pilot.<region>` — the front door Central's Asset resolves for
+		# "Open" (front_door_for_vm prefers Pilot). The customer's Frappe site is this
+		# Site (get_site); the Pilot is the admin console on the same bench. Done AFTER
+		# the site serves (the VM is up + the admin app is installed on every golden) and
+		# BEFORE Running so a console-wiring failure fails the whole site loud. See
+		# spec/14-self-serve.md.
+		clock.stage("attach Pilot admin console (proxy route + admin login)")
+		_provision_pilot(site, vm_name)
 		_set_status(site, "Running")
 		clock.done()
 	except Exception:
@@ -582,3 +606,29 @@ def _create_subdomain(site, vm_name: str) -> str:
 		}
 	).insert(ignore_permissions=True)
 	return subdomain.name
+
+
+def _provision_pilot(site, vm_name: str) -> str:
+	"""Stand up the attached Pilot admin console on this site's backing VM and link it.
+
+	Creates a `Pilot` at `<subdomain>-pilot.<region>` (disambiguated on collision by
+	`pilot_subdomain_for`), ATTACHED to this site's VM (`flags.attach_vm` → the Pilot
+	binds the VM instead of creating one, and won't tear it down). Its `after_insert`
+	only links the VM; `deploy_attached` then does the admin-mode wiring (a second nginx
+	vhost + admin login mint), creates the Pilot's own Subdomain (a second proxy route →
+	the SAME VM /128), and marks the Pilot Running. The Pilot is linked on the Site so
+	terminate() cascades. Returns the Pilot name.
+
+	This is the create_site half that makes the Asset's "Open" resolve a bench admin
+	console (front_door_for_vm prefers Pilot) rather than the customer site — the bug
+	this closes (spec/14-self-serve.md)."""
+	from atlas.atlas.doctype.pilot.pilot import deploy_attached
+	from atlas.atlas.subdomain_label import pilot_subdomain_for
+
+	pilot_label = pilot_subdomain_for(site.subdomain)
+	pilot = frappe.get_doc({"doctype": "Pilot", "subdomain": pilot_label, "tenant": site.tenant})
+	pilot.flags.attach_vm = vm_name
+	pilot.insert(ignore_permissions=True)
+	site.db_set("pilot", pilot.name)
+	deploy_attached(pilot.name)
+	return pilot.name
