@@ -38,6 +38,7 @@ def create_vm(
 	disk_gigabytes: int,
 	email: str | None = None,
 	cpu_max_cores: float | None = None,
+	frappe_version: str | None = None,
 ) -> dict:
 	"""Provision a bench VM for a Central team and return its (VM-shaped) mirror row.
 
@@ -56,6 +57,8 @@ def create_vm(
 	if not team:
 		frappe.throw("team is required.")
 
+	from atlas.atlas.placement import image_for_version, version_from_image
+
 	tenant = ensure_tenant(team, email)
 
 	spec = {
@@ -65,6 +68,9 @@ def create_vm(
 		# Placement is still a WIP pin: this server has the bench image. The Pilot's
 		# _provision_backing_vm falls back to the default image when none is set.
 		"server": "5d0943c8-4e43-48ad-b652-3f181e22fc4d",
+		# The Frappe version Central picked selects the bench image; an unknown/unbuilt
+		# version resolves to the default, so it never blocks the create.
+		"image": image_for_version(frappe_version),
 	}
 	if cpu_max_cores:
 		spec["cpu_max_cores"] = float(cpu_max_cores)
@@ -91,6 +97,9 @@ def create_vm(
 		"ipv6_address": vm.ipv6_address,
 		"public_ipv4": vm.public_ipv4,
 		"gateway_url": pilot.gateway_url,
+		# The version actually laid down (from the resolved image), so Central mirrors
+		# ground truth — not merely what it requested.
+		"frappe_version": version_from_image(vm.image),
 	}
 
 
