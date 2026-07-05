@@ -175,6 +175,7 @@ class Server(Document):
 			connection = connection_for_server(self)
 			upload_files(connection, self._bootstrap_uploads())
 			self._run_install_sh(connection)
+			self._ship_dashboard(connection)
 
 		task = run_task(
 			server=self.name,
@@ -202,6 +203,37 @@ class Server(Document):
 			frappe.throw(
 				f"install.sh failed on {self.name} (exit {exit_code}): {stderr[-500:] or stdout[-500:]}"
 			)
+
+	def _ship_dashboard(self, connection) -> None:
+		"""Build the read-only host dashboard on the controller and ship it to the
+		host, then enable its socket unit. WHOLLY best-effort: the dashboard is a
+		convenience, not part of the host's function, so nothing here may fail a
+		bootstrap. A build that can't run (no npm/node_modules) ships nothing; an
+		SSH error shipping or enabling it is logged and swallowed. Runs AFTER
+		install.sh so a broken venv still surfaces as a hard bootstrap failure —
+		the dashboard ships onto an already-good host or not at all.
+
+		Freshness: dashboard.dashboard_uploads() ships assets ONLY from a build it
+		just ran (dist/ is a gitignored artifact), so a re-bootstrap always lands
+		current assets alongside a matching server.py, never a stale dist."""
+		from atlas.atlas import dashboard
+
+		try:
+			uploads = dashboard.dashboard_uploads()
+			if not uploads:
+				return  # build could not be produced — skip silently, no unit enabled
+			upload_files(connection, uploads)
+			with ssh_key_file(connection.ssh_private_key) as key_path:
+				_stdout, stderr, exit_code = run_ssh(
+					connection, key_path, dashboard.enable_command(), timeout_seconds=60
+				)
+			if exit_code != 0:
+				frappe.logger("atlas").warning(
+					f"dashboard socket enable failed on {self.name} (exit {exit_code}): {stderr[-300:]}"
+				)
+		except Exception as exception:
+			# Never let a dashboard hiccup fail a real bootstrap.
+			frappe.logger("atlas").warning(f"dashboard ship skipped on {self.name}: {exception}")
 
 	@frappe.whitelist()
 	def sync_scripts(self) -> int:

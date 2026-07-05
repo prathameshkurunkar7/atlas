@@ -42,7 +42,7 @@ from pathlib import Path
 ATLAS_ROOT = Path(os.environ.get("ATLAS_ROOT", "/var/lib/atlas"))
 DIST_DIR = Path(os.environ.get("ATLAS_DIST", Path(__file__).parent / "dist"))
 BIND = os.environ.get("ATLAS_BIND", "0.0.0.0")
-PORT = int(os.environ.get("ATLAS_PORT", "8080"))
+PORT = int(os.environ.get("ATLAS_PORT", "9797"))
 
 
 # --------------------------------------------------------------------------- #
@@ -117,6 +117,7 @@ def host_facts() -> dict:
 		"kernel_version": boot.get("kernel_version") or run("uname", "-r").strip(),
 		"linux": _distro(),
 		"architecture": boot.get("architecture") or run("uname", "-m").strip(),
+		"cpu_model": _cpu_model(),
 		"python_version": boot.get("python_version", ""),
 		"uplink": _uplink(),
 		"cpu_total": _cpu_total(),
@@ -133,6 +134,18 @@ def _cpu_total() -> int | None:
 		return os.cpu_count()
 	except OSError:
 		return None
+
+
+def _cpu_model() -> str:
+	"""The CPU's marketing name (e.g. 'AMD EPYC 4245P 6-Core Processor') from the
+	first `model name` in /proc/cpuinfo. Empty string when unreadable."""
+	try:
+		for line in Path("/proc/cpuinfo").read_text().splitlines():
+			if line.startswith("model name"):
+				return line.split(":", 1)[1].strip()
+	except (OSError, IndexError):
+		pass
+	return ""
 
 
 def _mem_total_mib() -> int | None:
@@ -207,7 +220,7 @@ def virtual_machines() -> list[dict]:
 	inventory (spec/07). Each VM's identity comes from its network.env sidecar,
 	its disk from the LV naming scheme, its state from the systemd unit.
 
-	Enriched (FIELDS.md #1/#2/#3/#4) with: the host/namespace veth names and
+	Enriched (see CONTRACT.md) with: the host/namespace veth names and
 	jailer uid (so the flat network/firewall rows join back to a VM); the VM's
 	size (vcpus/mem from firecracker.json — the single most operator-relevant
 	fact the old page dropped); and its disk origin + fill from one batched `lvs`
@@ -254,6 +267,11 @@ def virtual_machines() -> list[dict]:
 				"mem_mib": mem_mib,
 				"cgroup_cpu_max": usage.get("cpu_max"),  # "quota period" (µs), or "max"
 				"cgroup_memory_max": usage.get("memory_max"),  # bytes, or "max"
+				# The raw cgroup caps parsed into the UI's units: the enforced ceiling
+				# in cores / MiB (spec/05 § cgroup). None when unlimited ("max") or the
+				# cgroup is unreadable (stopped VM / dev box).
+				"cpu_cap_cores": _cpu_cap_cores(usage.get("cpu_max")),
+				"mem_cap_mib": _mem_cap_mib(usage.get("memory_max")),
 				# Live actual usage from the cgroup — the honest denominator for
 				# "is this VM's committed size actually used?".
 				"mem_used_mib": usage.get("mem_used_mib"),
@@ -261,6 +279,8 @@ def virtual_machines() -> list[dict]:
 				"disk_lv": disk_lv,
 				"disk_origin": disk.get("origin"),
 				"disk_data_percent": disk.get("data_percent"),
+				"disk_size_bytes": disk.get("size_bytes"),
+				"disk_used_bytes": disk.get("used_bytes"),
 				"has_data_disk": (jail_root / "data.ext4").exists(),
 				"has_snapshot": (jail_root / "snapshot").is_dir(),
 				"migrating": uuid in migrating,
@@ -356,9 +376,33 @@ def _vm_cgroup_usage(cgroup: str | None) -> dict:
 	return out
 
 
+def _cpu_cap_cores(cpu_max: str | None) -> float | None:
+	"""cgroup `cpu.max` ("<quota> <period>" in µs, or "max <period>") → the CPU
+	ceiling in cores. quota/period is the fraction of ONE core the VM may burn;
+	'max' (unlimited) and unparseable shapes yield None (no false ceiling)."""
+	if not cpu_max:
+		return None
+	parts = cpu_max.split()
+	if not parts or parts[0] == "max":
+		return None
+	quota = _int(parts[0])
+	period = _int(parts[1]) if len(parts) > 1 else 100000
+	if quota is None or not period:
+		return None
+	return round(quota / period, 2)
+
+
+def _mem_cap_mib(memory_max: str | None) -> int | None:
+	"""cgroup `memory.max` (bytes, or "max") → the memory ceiling in MiB. 'max'
+	(unlimited) and non-numeric shapes yield None."""
+	if not memory_max or not memory_max.isdigit():
+		return None
+	return int(memory_max) // (1024 * 1024)
+
+
 def _vm_size(jail_root: Path) -> tuple[int | None, int | None]:
 	"""(vcpus, mem_mib) from the VM's firecracker.json machine-config (spec/06).
-	FIELDS.md #2: the single most operator-relevant fact the old page omitted."""
+	The single most operator-relevant fact the old page omitted."""
 	cfg = read_json(jail_root / "firecracker.json")
 	machine = cfg.get("machine-config") or cfg.get("machine_config") or {}
 	vcpus = machine.get("vcpu_count")
@@ -367,24 +411,30 @@ def _vm_size(jail_root: Path) -> tuple[int | None, int | None]:
 
 
 def _lvs_disk_info() -> dict:
-	"""One batched `lvs` read → {lv_name: {origin, data_percent}}. Joining origin
-	+ fill per VM one LV at a time is O(N) commands; this is one. (FIELDS.md #4
-	warns lvs over hundreds of LVs still has a cost — one call caps it.)"""
-	out = run(
-		"lvs",
-		"--noheadings",
-		"--separator",
-		"|",
-		"-o",
-		"lv_name,origin,data_percent",
-	)
+	"""One batched `lvs` read → {lv_name: {origin, data_percent, size_bytes,
+	used_bytes}}. Joining origin + fill + size per VM one LV at a time is O(N)
+	commands; this is one. (disk lineage warns lvs over hundreds of LVs still has
+	a cost — one call caps it.) Sizes come in raw bytes (`--units b`); used_bytes
+	is size * data_percent (the thin LV's real written extents)."""
+	rows = _lvs_rows("lv_name,origin,data_percent,lv_size")
 	info = {}
-	for line in out.splitlines():
-		parts = [p.strip() for p in line.split("|")]
-		if len(parts) < 3:
+	for parts in rows:
+		if len(parts) < 4:
 			continue
-		name, origin, data = parts[:3]
-		info[name] = {"origin": origin or None, "data_percent": _float(data)}
+		name, origin, data, size = parts[:4]
+		data_percent = _float(data)
+		size_bytes = _int(size)
+		used_bytes = (
+			int(size_bytes * data_percent / 100.0)
+			if size_bytes is not None and data_percent is not None
+			else None
+		)
+		info[name] = {
+			"origin": origin or None,
+			"data_percent": data_percent,
+			"size_bytes": size_bytes,
+			"used_bytes": used_bytes,
+		}
 	return info
 
 
@@ -434,18 +484,21 @@ def images() -> list[dict]:
 	rows = []
 	if not base.is_dir():
 		return rows
+	lv_info = _lvs_disk_info()  # base LV byte sizes, from the one batched lvs read
 	for entry in sorted(base.iterdir()):
 		if not entry.is_dir():
 			continue
 		kernel = next((f.name for f in entry.glob("vmlinux*")), None)
 		rootfs = next((f.name for f in entry.glob("*.ext4")), None)
+		base_lv = f"atlas-image-{entry.name}"
 		rows.append(
 			{
 				"name": entry.name,
 				"kernel": kernel,
 				"rootfs": rootfs,
 				"rootfs_size": _size(entry / rootfs) if rootfs else None,
-				"base_lv": f"atlas-image-{entry.name}",
+				"base_lv": base_lv,
+				"base_lv_size": lv_info.get(base_lv, {}).get("size_bytes"),
 			}
 		)
 	return rows
@@ -470,7 +523,9 @@ def snapshots() -> list[dict]:
 					"captured_kernel": sig.get("kernel"),
 				}
 			)
-	# Disk snapshots are LVs (atlas-snap-<uuid>), not files — read them from lvs.
+	# Disk snapshots are LVs (atlas-snap-<uuid>), not files — read them from lvs,
+	# with their fill (data_percent) from the one batched disk-info read.
+	lv_info = _lvs_disk_info()
 	for lv in _lvs_names():
 		if lv.startswith("atlas-snap-"):
 			uuid = lv[len("atlas-snap-") :]
@@ -480,6 +535,7 @@ def snapshots() -> list[dict]:
 					"kind": "disk",
 					"snapshot_lv": lv,
 					"origin_lv": f"atlas-vm-{uuid}",
+					"data_percent": lv_info.get(lv, {}).get("data_percent"),
 				}
 			)
 	return rows
@@ -518,7 +574,10 @@ def pool() -> dict | None:
 			"vg": vg,
 			"pool": name,
 			"backing": _pool_backing(),
-			"size": size,
+			"backing_device": _pool_backing_device(),
+			# lvs prefixes a rounded size with '<' ("<886.24g"); strip it so the
+			# size string is a clean number the UI can parse.
+			"size": size.lstrip("<~"),
 			"data_percent": _float(data),
 			"metadata_percent": _float(meta),
 		}
@@ -648,6 +707,21 @@ def _pool_backing() -> str:
 	return "loopback" if (ATLAS_ROOT / "pool" / "atlas-pool.img").exists() else ""
 
 
+def _pool_backing_device() -> str | None:
+	"""The actual block device backing the pool (e.g. '/dev/md2'), from the first
+	line of pool-devices. Self-documents the pool row: 'device' + which device.
+	None when the marker is absent (loopback hosts / no pool)."""
+	devices = ATLAS_ROOT / "pool" / "pool-devices"
+	try:
+		for line in devices.read_text().splitlines():
+			token = line.strip()
+			if token and not token.startswith("#"):
+				return token
+	except OSError:
+		pass
+	return None
+
+
 def _lvs_names() -> list[str]:
 	out = run("lvs", "--noheadings", "-o", "lv_name")
 	return [line.strip() for line in out.splitlines() if line.strip()]
@@ -741,6 +815,7 @@ def reserved_ips() -> list[dict]:
 				{
 					"address": vm["reserved_ipv4"],
 					"attached_vm": vm["uuid"],
+					"guest_ipv4": vm.get("ipv4_guest"),  # the DNAT target — self-documents the row
 					"anchor": None,
 					"anchor_gateway": None,
 				}
@@ -919,7 +994,20 @@ def units() -> list[dict]:
 		kind = _unit_kind(name)
 		if kind is None:
 			continue
-		rows.append({"name": name, "load": load, "active": active, "sub": sub, "kind": kind})
+		# The remaining tokens are the unit's free-text DESCRIPTION column. The
+		# forwarder units carry their socat command line here, which names the
+		# migration peer host:port — migrations() reads it back out.
+		description = " ".join(tokens[4:])
+		rows.append(
+			{
+				"name": name,
+				"load": load,
+				"active": active,
+				"sub": sub,
+				"kind": kind,
+				"description": description,
+			}
+		)
 	return rows
 
 
@@ -1110,8 +1198,10 @@ def private_mesh() -> list[dict]:
 
 def migrations() -> list[dict]:
 	"""VMs mid-migration: one row per live migration forwarder. The socat unit's
-	description carries the peer host:port (FIELDS.md #12), so we read it there —
-	the forwarder is the observable proof a migration is in flight."""
+	description carries the peer host:port, so we read it there —
+	the forwarder is the observable proof a migration is in flight.
+
+	units() emits each forwarder's `description`, so `peer` resolves from it."""
 	rows = []
 	for u in units():
 		if u.get("kind") != "migration-forwarder":
@@ -1232,7 +1322,7 @@ def _sudo_users() -> set[str]:
 def processes() -> list[dict]:
 	"""The Atlas process tree: firecracker + jailer processes, one row each, with
 	the VM uuid they serve (jailer's chroot path carries it). Maps a stray process
-	back to its machine (FIELDS.md #3). Best-effort via `ps`."""
+	back to its machine (via the jailer uid). Best-effort via `ps`."""
 	rows = []
 	out = run("ps", "-eo", "pid,user,rss,args", "--no-headers")
 	for line in out.splitlines():
@@ -1617,13 +1707,45 @@ def collect_once() -> dict:
 	return state
 
 
+def _systemd_socket() -> socket.socket | None:
+	"""Return the listening socket systemd handed us via socket activation, or None.
+
+	Under socket activation, systemd opens the listening socket itself and starts
+	this service on the first connection, passing the socket as fd 3 with
+	`LISTEN_FDS`/`LISTEN_PID` set (the sd_listen_fds protocol). We adopt that fd
+	instead of binding our own — the service needs no port of its own and can be
+	stopped when idle. Absent those vars (a plain `python3 server.py`), return None
+	and fall back to binding `BIND:PORT`.
+	"""
+	if os.environ.get("LISTEN_PID") != str(os.getpid()):
+		return None
+	if int(os.environ.get("LISTEN_FDS", "0")) < 1:
+		return None
+	SD_LISTEN_FDS_START = 3
+	return socket.socket(fileno=SD_LISTEN_FDS_START)
+
+
+class _ActivatedServer(ThreadingHTTPServer):
+	"""ThreadingHTTPServer that adopts a pre-bound, pre-listening socket when one
+	is supplied (systemd socket activation), else binds/listens itself."""
+
+	def __init__(self, addr, handler, activated=None):
+		self._activated = activated
+		super().__init__(addr, handler, bind_and_activate=activated is None)
+		if activated is not None:
+			self.socket = activated
+			self.server_address = activated.getsockname()
+
+
 def main():
 	if "--collect" in sys.argv:
 		# Emit one state document as JSON and exit — the dev proxy's transport.
 		sys.stdout.write(json.dumps(collect_once()))
 		return
-	server = ThreadingHTTPServer((BIND, PORT), Handler)
-	print(f"atlas host dashboard on http://{BIND}:{PORT}  (root={ATLAS_ROOT})")
+	activated = _systemd_socket()
+	server = _ActivatedServer((BIND, PORT), Handler, activated=activated)
+	where = "systemd socket" if activated is not None else f"http://{BIND}:{PORT}"
+	print(f"atlas host dashboard on {where}  (root={ATLAS_ROOT})")
 	try:
 		server.serve_forever()
 	except KeyboardInterrupt:
