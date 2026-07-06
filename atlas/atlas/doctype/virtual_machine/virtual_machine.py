@@ -1009,16 +1009,33 @@ class VirtualMachine(Document):
 		Subdomain) — would otherwise strand its routes on a /128 that `allocate_ipv6`
 		re-hands to the next tenant, a cross-tenant traffic leak.
 
-		A `Subdomain` is the LINKER (its `virtual_machine` field points AT this VM), so
-		deleting it is unobstructed by Frappe's link-integrity guard (which protects the
-		linked-TO doc) — unlike `Site._delete_subdomain`, which first clears the Site's
-		own Link field to the Subdomain. Idempotent: a VM with no Subdomains is a no-op.
+		A `Subdomain` is the LINKER of the VM (its `virtual_machine` field points AT this
+		VM), so nothing on the VM side obstructs the delete. But a bench VM's Subdomain is
+		itself linked-TO by the `Pilot` that fronts it (`subdomain_doc`), and a self-serve
+		site's by its `Site` (`subdomain_doc`) — and Frappe's link-integrity guard protects
+		that linked-TO doc, so deleting the Subdomain out from under a live Pilot/Site raises
+		`LinkExistsError`. Both `Pilot._delete_subdomain` and `Site._delete_subdomain` clear
+		their own `subdomain_doc` before deleting, but a VM terminated directly (the operator,
+		or Central's `terminate_server` driving the VM's own `terminate`) bypasses those
+		paths, so we clear the referencing link here first — the same clear-then-delete order,
+		from the side that owns the Subdomain rather than the side that references it.
+		Idempotent: a VM with no Subdomains is a no-op.
 		`terminate()` is the ONLY controller-side teardown — there is deliberately NO
 		scheduled sweeper backstop (spec/18 Component F, "Why no sweeper"): because this
 		deletes a VM's rows in the same teardown that releases its /128, a row never
 		outlives its VM's address, so the case a sweeper would catch is closed here."""
 		for name in frappe.get_all("Subdomain", filters={"virtual_machine": self.name}, pluck="name"):
+			self._clear_subdomain_references(name)
 			frappe.delete_doc("Subdomain", name, ignore_permissions=True)
+
+	def _clear_subdomain_references(self, subdomain: str) -> None:
+		"""Null out any `Pilot`/`Site` `subdomain_doc` Link pointing at `subdomain`, so the
+		link-integrity guard lets the Subdomain be deleted. The null must be persisted
+		(db_set) before the delete, since the guard queries the DB — mirrors the db_set order
+		in `Pilot._delete_subdomain` / `Site._delete_subdomain`."""
+		for doctype in ("Pilot", "Site"):
+			for name in frappe.get_all(doctype, filters={"subdomain_doc": subdomain}, pluck="name"):
+				frappe.db.set_value(doctype, name, "subdomain_doc", None)
 
 	def _delete_custom_domains(self) -> None:
 		"""Drop every Custom Domain that routes to this VM, so terminating it stops routing

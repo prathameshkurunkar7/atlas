@@ -526,6 +526,39 @@ class TestVirtualMachine(IntegrationTestCase):
 		publish.assert_called_once()
 		self.assertTrue(frappe.db.exists("TLS Certificate", cert.name))
 
+	def test_terminate_deletes_a_subdomain_a_pilot_still_links(self) -> None:
+		# A bench VM's Subdomain is linked-TO by the Pilot that fronts it
+		# (`subdomain_doc`), so deleting it out from under the Pilot would trip Frappe's
+		# link-integrity guard (LinkExistsError). This is the exact state Central's
+		# terminate_server drives (run_doc_method → the VM's own terminate). Terminate
+		# must clear the Pilot's link first, then delete the Subdomain — not 500.
+		from atlas.atlas.doctype.virtual_machine import virtual_machine as module
+
+		_ensure_active_root_domain()
+		vm = _new_vm()
+		subdomain = frappe.get_doc(
+			{
+				"doctype": "Subdomain",
+				"subdomain": "linked-sub",
+				"virtual_machine": vm.name,
+				"address": "2001:db8:1::5",
+			}
+		).insert(ignore_permissions=True)
+		# The attach path binds an existing VM without provisioning a new one, so the
+		# Pilot lands with a subdomain_doc link but no heavy after_insert side effects.
+		pilot = frappe.get_doc({"doctype": "Pilot", "subdomain": "linked-sub"})
+		pilot.flags.attach_vm = vm.name
+		pilot.insert(ignore_permissions=True)
+		pilot.db_set("subdomain_doc", subdomain.name)
+
+		vm.db_set("status", "Stopped")
+		vm.reload()
+		with patch.object(module, "run_task", return_value=fake_task(name="task-term")):
+			vm.terminate()  # must not raise LinkExistsError
+
+		self.assertFalse(frappe.db.exists("Subdomain", subdomain.name))
+		self.assertIsNone(frappe.db.get_value("Pilot", pilot.name, "subdomain_doc"))
+
 	def test_parse_size_bytes(self) -> None:
 		from atlas.atlas.task_results import parse_result
 
