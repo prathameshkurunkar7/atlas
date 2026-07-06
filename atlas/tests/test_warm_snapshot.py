@@ -377,6 +377,8 @@ class TestWarmClone(IntegrationTestCase):
 
 		class FakeSite:
 			name = "warm-site.example.test"
+			subdomain = "warm-site"
+			tenant = None
 
 		clone_name = _provision_backing_vm(FakeSite())
 		clone = frappe.get_doc("Virtual Machine", clone_name)

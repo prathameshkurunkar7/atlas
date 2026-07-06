@@ -230,7 +230,14 @@ def make_server(
 
 
 def make_image(name: str = "test-image", **overrides: Any) -> Document:
-	"""Create a `Virtual Machine Image` row if it doesn't already exist."""
+	"""Create a `Virtual Machine Image` row if it doesn't already exist.
+
+	The insert runs under `no_commit_enqueue()`: an active image's `after_insert`
+	fans out a sync Task per Active server via the commit-before-enqueue path, and
+	as a shared fixture (tests that need an image but not its sync) that would leak
+	Server/Task rows past the rollback and pile real jobs onto `long` until the
+	suite trips the queue-size guard. Tests that assert on the auto-sync fan-out
+	build the image row inline under their own `no_commit_enqueue()` instead."""
 	if frappe.db.exists("Virtual Machine Image", name):
 		return frappe.get_doc("Virtual Machine Image", name)
 	doc = {
@@ -247,7 +254,8 @@ def make_image(name: str = "test-image", **overrides: Any) -> Document:
 		"is_active": 1,
 	}
 	doc.update(overrides)
-	return frappe.get_doc(doc).insert(ignore_permissions=True)
+	with no_commit_enqueue():
+		return frappe.get_doc(doc).insert(ignore_permissions=True)
 
 
 def make_pilot(subdomain: str = "acme", vm_spec: dict | None = None, **overrides: Any) -> Document:
