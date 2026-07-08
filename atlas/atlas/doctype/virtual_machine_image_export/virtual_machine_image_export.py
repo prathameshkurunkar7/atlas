@@ -123,18 +123,26 @@ class VirtualMachineImageExport(Document):
 
 def _image_home_server(image: str) -> str | None:
 	"""The server a local image's base LV lives on. A local image is promoted from a
-	snapshot on exactly one host; we find it by the last successful promote/build Task
+	snapshot on exactly one host; we find it by the last non-failed promote/build Task
 	that produced the base LV there. Falls back to None so export.preflight_checks can
 	raise a clear "not resolvable" error rather than the row silently mis-denormalizing.
 
 	A promoted image records nothing pointing at its home server on the row itself
 	(the LV name is derived, not stored), so the Task history is the authoritative
-	trail: the promote ran on the server that holds the LV."""
+	trail: the promote ran on the server that holds the LV.
+
+	We exclude only 'Failure' (a promote that aborted before dd'ing the LV points at
+	no usable image), NOT status = 'Success': the image row is inserted before the
+	promote Task runs (the durable anchor), so a runner that dies after the LV is
+	written but before flipping the Task to Success leaves a real, usable image with a
+	still-'Running' Task. Gating on Success alone made such an image un-exportable.
+	Base-LV presence on the resolved host is verified for real inside receive-base's
+	own on-host pre-flight, so accepting Pending/Running here is safe."""
 	rows = frappe.db.sql(
 		"""
 		SELECT server FROM `tabTask`
 		WHERE script IN ('promote-snapshot-image', 'promote-snapshot-image.py')
-		  AND status = 'Success'
+		  AND status != 'Failure'
 		  AND variables LIKE %(pattern)s
 		ORDER BY modified DESC
 		LIMIT 1

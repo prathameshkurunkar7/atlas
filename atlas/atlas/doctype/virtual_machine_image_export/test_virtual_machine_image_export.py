@@ -67,6 +67,25 @@ def _export_row(image: str, source: str, target: str):
 	).insert(ignore_permissions=True)
 
 
+def _promote_task(image: str, server: str, status: str = "Success"):
+	"""Insert a real promote-snapshot-image Task so _image_home_server's Task-history
+	resolution has something to match. status is set post-insert (the row's status
+	starts Pending) to exercise the != 'Failure' gate."""
+	import json
+
+	task = frappe.get_doc(
+		{
+			"doctype": "Task",
+			"server": server,
+			"script": "promote-snapshot-image",
+			"variables": json.dumps({"IMAGE_NAME": image}, sort_keys=True),
+			"triggered_by": "Administrator",
+		}
+	).insert(ignore_permissions=True)
+	frappe.db.set_value("Task", task.name, "status", status)
+	return task.name
+
+
 class TestExportPure(IntegrationTestCase):
 	def test_export_port_is_stable_and_in_range(self) -> None:
 		port = export_module.export_port("bench-v16")
@@ -255,3 +274,22 @@ class TestExportPreflight(IntegrationTestCase):
 		image = _local_image()
 		# Should not raise: local image, explicit source, distinct Active same-provider target.
 		export_module.preflight_checks(image, target, source)
+
+	def test_resolves_source_from_unflipped_promote_task(self) -> None:
+		# A promote whose runner died after the LV was written but before flipping the
+		# Task to Success leaves a real image with a still-'Running' Task. It must still
+		# resolve a home server — gating on status='Success' made such an image
+		# un-exportable (the prod bug this test pins).
+		source, target = _servers()
+		image = _local_image()
+		_promote_task(image, source, status="Running")
+		export_module.preflight_checks(image, target, None)
+
+	def test_failed_promote_is_not_a_home(self) -> None:
+		# A promote that aborted before dd'ing the LV points at no usable image, so its
+		# server must not resolve as a home (the one status we still exclude).
+		source, target = _servers()
+		image = _local_image()
+		_promote_task(image, source, status="Failure")
+		with self.assertRaises(frappe.ValidationError):
+			export_module.preflight_checks(image, target, None)
