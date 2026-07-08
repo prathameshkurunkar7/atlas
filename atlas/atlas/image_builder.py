@@ -59,6 +59,17 @@ def tree_uploads(recipe: ImageRecipe) -> list[tuple[Path, str]]:
 		if relative.parts[0] in recipe.exclude or "__pycache__" in relative.parts:
 			continue
 		uploads.append((entry, f"{recipe.remote_directory}/{relative.as_posix()}"))
+	# Fail loud if a declared entrypoint isn't in the tree. is_file() above silently
+	# skips a missing file, but the build/warm steps still invoke recipe.<entrypoint>
+	# by name — a stale app checkout (missing warm.sh) then dies deep in the guest with
+	# a cryptic "No such file or directory". Catch it here, at the source of truth.
+	staged = {remote for _, remote in uploads}
+	for entrypoint in (recipe.build_entrypoint, recipe.warm_entrypoint):
+		if entrypoint and f"{recipe.remote_directory}/{entrypoint}" not in staged:
+			frappe.throw(
+				f"Recipe {recipe.name} declares entrypoint {entrypoint!r} but it is not "
+				f"in source tree {source} (stale app checkout?)"
+			)
 	return uploads
 
 

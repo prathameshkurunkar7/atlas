@@ -248,6 +248,16 @@ class TestTreeUploads(IntegrationTestCase):
 		build = next(r for _, r in image_builder.tree_uploads(_BENCH) if r.endswith("/build.sh"))
 		self.assertEqual(build, _BENCH.remote_entrypoint)
 
+	def test_declared_entrypoint_missing_from_tree_throws(self) -> None:
+		# A stale app checkout (missing warm.sh) uploads a tree without the file, but
+		# the warm step still invokes recipe.warm_entrypoint by name — catch it here
+		# instead of dying deep in the guest with "No such file or directory".
+		import dataclasses
+
+		stale = dataclasses.replace(_BENCH, warm_entrypoint="ghost.sh")
+		with self.assertRaisesRegex(frappe.ValidationError, "ghost.sh"):
+			image_builder.tree_uploads(stale)
+
 	def test_proxy_tree_excludes_test_harness(self) -> None:
 		remotes = [remote for _, remote in image_builder.tree_uploads(_PROXY)]
 		self.assertTrue(any(r.endswith("/build.sh") for r in remotes), remotes)
