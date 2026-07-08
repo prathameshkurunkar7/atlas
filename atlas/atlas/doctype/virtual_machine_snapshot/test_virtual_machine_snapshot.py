@@ -227,11 +227,39 @@ class TestVirtualMachineSnapshot(IntegrationTestCase):
 			mocked.call_args.kwargs["variables"]["DATA_SNAPSHOT_ROOTFS_PATH"], snapshot.data_rootfs_path
 		)
 
-	def test_promote_to_image_creates_local_image_row(self) -> None:
+	def test_promote_inserts_inactive_and_enqueues(self) -> None:
+		# The button inserts the image row INACTIVE and hands the long host dd to a
+		# background job — no run_task in the request. is_active=0 keeps placement from
+		# provisioning a half-baked image while the dd is still in flight.
+		snapshot = _make_snapshot(_stopped_vm())
+		frappe.db.delete("Virtual Machine Image", {"image_name": "promoted-async"})
+		with patch("frappe.enqueue") as enqueue:
+			image_name = snapshot.promote_to_image("promoted-async")
+
+		image = frappe.get_doc("Virtual Machine Image", image_name)
+		self.assertEqual(image.name, "promoted-async")
+		self.assertEqual(image.is_active, 0)  # not provisionable until the job finishes
+		self.assertTrue(image.is_local)
+		# The job is enqueued to run the host half, keyed by snapshot + image name.
+		call = enqueue.call_args
+		self.assertEqual(
+			call.args[0],
+			"atlas.atlas.doctype.virtual_machine_snapshot.virtual_machine_snapshot.run_promote",
+		)
+		self.assertTrue(call.kwargs["enqueue_after_commit"])
+		self.assertEqual(call.kwargs["snapshot_name"], snapshot.name)
+		self.assertEqual(call.kwargs["image_name"], "promoted-async")
+
+	def test_run_promote_runs_dd_and_activates(self) -> None:
+		# The background job runs promote-snapshot-image.py on the snapshot's server
+		# with the snapshot's LV path as the dd source, then flips the row active.
 		from atlas.atlas.doctype.virtual_machine_snapshot import virtual_machine_snapshot as module
 
 		snapshot = _make_snapshot(_stopped_vm())
 		frappe.db.delete("Virtual Machine Image", {"image_name": "promoted-v1"})
+		with patch("frappe.enqueue"):
+			image_name = snapshot.promote_to_image("promoted-v1")
+
 		with patch.object(
 			module,
 			"run_task",
@@ -239,10 +267,8 @@ class TestVirtualMachineSnapshot(IntegrationTestCase):
 				stdout='ATLAS_RESULT={"image_lv": "atlas-image-promoted-v1", "size_bytes": 4096}'
 			),
 		) as mocked:
-			image_name = snapshot.promote_to_image("promoted-v1")
+			module.run_promote(snapshot.name, image_name)
 
-		# The Task ran promote-snapshot-image.py on the snapshot's server with the
-		# snapshot's LV path as the dd source.
 		self.assertEqual(mocked.call_args.kwargs["script"], "promote-snapshot-image")
 		self.assertEqual(mocked.call_args.kwargs["server"], snapshot.server)
 		variables = mocked.call_args.kwargs["variables"]
@@ -255,36 +281,54 @@ class TestVirtualMachineSnapshot(IntegrationTestCase):
 		source = frappe.get_doc("Virtual Machine Image", snapshot.source_image)
 		self.assertEqual(variables["KERNEL_FILENAME"], source.kernel_filename)
 
-		# A local (URL-less) image row was registered, kernel inherited from the
-		# snapshot's source image, rootfs_filename = the promoted LV name.
+		# A local (URL-less) image row, kernel inherited from the snapshot's source
+		# image, rootfs_filename = the promoted LV name — and now ACTIVE.
 		image = frappe.get_doc("Virtual Machine Image", image_name)
 		self.assertEqual(image.name, "promoted-v1")
 		self.assertEqual(image.kernel_url, "")
 		self.assertEqual(image.rootfs_url, "")
 		self.assertEqual(image.rootfs_filename, "atlas-image-promoted-v1")
 		self.assertEqual(image.default_disk_gigabytes, snapshot.disk_gigabytes)
-		source = frappe.get_doc("Virtual Machine Image", snapshot.source_image)
 		self.assertEqual(image.kernel_filename, source.kernel_filename)
 		self.assertTrue(image.is_local)
 		self.assertEqual(image.is_active, 1)
 
-	def test_promote_skips_sync_fanout(self) -> None:
-		# A promoted (local) image must NOT enqueue a sync Task on after_insert —
-		# its bytes are an LV already on its server, nothing to download.
+	def test_run_promote_deletes_image_row_when_host_dd_fails(self) -> None:
+		# The host dd raising (SSH error, non-zero exit, timeout) must leave NO image
+		# row behind — not even the inactive anchor. Otherwise a retry collides with a
+		# ghost row, and (the old bug) a survivor with is_active=1 would be provisioned
+		# from despite its LV never being written.
 		from atlas.atlas.doctype.virtual_machine_snapshot import virtual_machine_snapshot as module
 
-		# setUp's _ensure_test_server() already created an Active server, so a
-		# non-local image WOULD fan out here; the local image must not.
+		snapshot = _make_snapshot(_stopped_vm())
+		frappe.db.delete("Virtual Machine Image", {"image_name": "promoted-doomed"})
+		with patch("frappe.enqueue"):
+			image_name = snapshot.promote_to_image("promoted-doomed")
+		self.assertTrue(frappe.db.exists("Virtual Machine Image", image_name))  # inactive anchor
+
+		with patch.object(module, "run_task", side_effect=frappe.ValidationError("host dd blew up")):
+			with self.assertRaises(frappe.ValidationError):
+				module.run_promote(snapshot.name, image_name)
+		self.assertFalse(
+			frappe.db.exists("Virtual Machine Image", "promoted-doomed"),
+			"a failed promote must leave no image row",
+		)
+
+	def test_promote_skips_sync_fanout(self) -> None:
+		# A promoted (local) image must NOT enqueue a sync Task on after_insert —
+		# its bytes are an LV already on its server, nothing to download. (promote
+		# itself enqueues run_promote for the host dd; that is the only allowed enqueue.)
 		snapshot = _make_snapshot(_stopped_vm())
 		frappe.db.delete("Virtual Machine Image", {"image_name": "promoted-nosync"})
-		with patch.object(
-			module,
-			"run_task",
-			return_value=fake_task(stdout='ATLAS_RESULT={"image_lv": "x", "size_bytes": 1}'),
-		):
-			with patch("frappe.enqueue") as enqueue:
-				snapshot.promote_to_image("promoted-nosync")
-		enqueue.assert_not_called()
+		with patch("frappe.enqueue") as enqueue:
+			snapshot.promote_to_image("promoted-nosync")
+
+		enqueued = [c.args[0] for c in enqueue.call_args_list]
+		self.assertEqual(
+			enqueued,
+			["atlas.atlas.doctype.virtual_machine_snapshot.virtual_machine_snapshot.run_promote"],
+			"only the promote host-job may be enqueued — no image sync fan-out",
+		)
 
 	def test_promote_rejects_warm_snapshot(self) -> None:
 		# A warm snapshot's value is its frozen memory pair — promoting it would
@@ -416,19 +460,19 @@ class TestVirtualMachineSnapshot(IntegrationTestCase):
 		mocked.assert_not_called()
 
 	def test_promote_requires_typed_result_line(self) -> None:
-		# A truncated/failed Task with no ATLAS_RESULT line fails loud. The image row
-		# is inserted FIRST (the durable anchor), so it exists right up to the throw;
-		# in production the uncaught exception rolls the request back, undoing it —
-		# the rollback() here simulates that, and the row is then gone, so promote is
-		# all-or-nothing (no row pointing at an LV the failed Task never finished).
+		# A truncated/failed Task with no ATLAS_RESULT line fails loud in run_promote.
+		# The except handler deletes the inactive anchor, so promote is all-or-nothing
+		# (no row pointing at an LV the failed Task never finished) — without relying on
+		# a request rollback.
 		from atlas.atlas.doctype.virtual_machine_snapshot import virtual_machine_snapshot as module
 
 		snapshot = _make_snapshot(_stopped_vm())
 		frappe.db.delete("Virtual Machine Image", {"image_name": "promote-truncated"})
+		with patch("frappe.enqueue"):
+			image_name = snapshot.promote_to_image("promote-truncated")
 		with patch.object(module, "run_task", return_value=fake_task(stdout="no marker here")):
 			with self.assertRaises(ValueError):
-				snapshot.promote_to_image("promote-truncated")
-		frappe.db.rollback()  # the request-layer rollback an uncaught throw triggers
+				module.run_promote(snapshot.name, image_name)
 		self.assertFalse(frappe.db.exists("Virtual Machine Image", "promote-truncated"))
 
 	def test_on_trash_skips_when_no_rootfs_path(self) -> None:

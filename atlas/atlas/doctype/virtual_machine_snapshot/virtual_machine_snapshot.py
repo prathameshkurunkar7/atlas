@@ -255,14 +255,22 @@ class VirtualMachineSnapshot(Document):
 		Rather than lose data quietly, we throw on a data-disk snapshot: promote a
 		data-less snapshot, or clone this one to preserve its data disk.
 
-		**Ordering: the image row is the durable anchor.** We insert the row FIRST,
-		then run the host `dd`. The host import is idempotent, so a host failure
-		(which raises and rolls the row back with it) leaves nothing to clean —
-		never an orphaned read-only `atlas-image-*` LV with no owning row (those are
-		protected, so the lifecycle could never reclaim one). This mirrors
-		`Virtual Machine.snapshot()`'s insert-then-host-work order.
+		**Async: insert INACTIVE, then a background job does the dd + activation.** The
+		host `dd` of a ~28 GB rootfs takes ~35s — too long to hold a web request open
+		(a gunicorn timeout mid-`dd` is what left Tasks stuck Running in production,
+		2026-07-09). So this method inserts the image row `is_active=0`, enqueues
+		`run_promote` (after_commit), and returns immediately; the job runs the `dd` and
+		flips `is_active=1` once the Task confirms the LV exists. Placement ignores
+		inactive images (placement.py), so a promote still mid-flight — or a job that
+		died — can never be provisioned from. On a host failure the job deletes the
+		inactive anchor and re-raises, so promote is all-or-nothing. We do NOT rely on
+		the image insert rolling back with a host failure: `run_task` commits its own
+		Task row mid-flight, so the two are not one transaction (relying on that rollback
+		is what left orphaned `is_active=1` rows).
 
-		Returns the new image's name."""
+		Returns the new image's name. The image is INACTIVE until the background job
+		finishes — poll `is_active` (or the enqueued Task) to know when it is
+		provisionable."""
 		if self.status != "Available":
 			frappe.throw(f"Snapshot is not Available (status is {self.status})")
 		if self.kind == "Warm":
@@ -301,7 +309,20 @@ class VirtualMachineSnapshot(Document):
 			)
 
 		rootfs_filename = f"atlas-image-{image_name}"
-		# Register the local image row FIRST — the durable anchor (see docstring).
+		# Register the local image row as the durable anchor, but INACTIVE
+		# (is_active=0) until the host dd confirms the LV exists. Placement only
+		# considers is_active=1 images (placement.py), so an inactive row is invisible
+		# to provisioning — a promote that dies mid-dd can never leave a provisionable
+		# image whose LV is missing or half-written.
+		#
+		# Ordering matters because run_task is NOT transactional with this insert: it
+		# commits its own Task row (Running, then the outcome) mid-flight, so a host
+		# failure can NOT be relied on to roll the image row back with it (that was the
+		# old assumption, and the source of orphaned is_active=1 rows). We make the
+		# lifecycle explicit instead: insert inactive → dd → activate on success, and
+		# delete the anchor ourselves on any raise. A worker KILL (no raise) still can't
+		# hurt — the row stays inactive, so it is never provisioned from.
+		#
 		# Empty kernel_url/rootfs_url => a URL-less image (validate permits it;
 		# after_insert/sync skip it — its bytes are the promoted LV, already on the
 		# server, not a download). rootfs_filename is the LV name; the on-disk file is
@@ -325,32 +346,65 @@ class VirtualMachineSnapshot(Document):
 				# promote→image path's equivalent (spec/08). Empty for a non-bench image.
 				"build_mode": self.build_mode or None,
 				"tenant": self.tenant,
-				"is_active": 1,
+				"is_active": 0,
 			}
 		).insert(ignore_permissions=True)
 
-		# Then dd the snapshot LV into the read-only atlas-image-<name> LV on the
-		# server, and materialize the image dir (kernel hard-linked from the source
-		# image, rootfs presence sentinel) so a new VM provisions from it exactly like
-		# a synced image. Idempotent on the host (a no-op if the target LV already
-		# exists). A host failure raises here and rolls back the image row above with
-		# it, so promote is all-or-nothing — never a half-state.
-		task = run_task(
-			server=self.server,
-			script="promote-snapshot-image",
-			variables={
-				"SNAPSHOT_ROOTFS_PATH": self.rootfs_path,
-				"IMAGE_NAME": image_name,
-				"DISK_GIGABYTES": str(self.disk_gigabytes),
-				"ROOTFS_FILENAME": rootfs_filename,
-				"SOURCE_IMAGE": self.source_image,
-				"KERNEL_FILENAME": source_kernel_filename,
-			},
-			virtual_machine=self.virtual_machine,
-			timeout_seconds=600,
+		# The host dd of a 28 GB rootfs takes ~35s — too long to hold a web request
+		# open (a gunicorn timeout mid-dd is exactly what left Tasks stuck Running,
+		# 2026-07-09). So the button returns here with the inactive anchor persisted,
+		# and a background job does the dd + activation. enqueue_after_commit so the
+		# worker only starts once this insert has committed (mirrors
+		# Virtual Machine.after_insert → auto_provision). A killed/lost job leaves the
+		# anchor inactive (harmless); the operator's retry re-drives _run_promote,
+		# which is idempotent (the host dd is a no-op if the LV already exists).
+		frappe.enqueue(
+			"atlas.atlas.doctype.virtual_machine_snapshot.virtual_machine_snapshot.run_promote",
+			queue="long",
+			enqueue_after_commit=True,
+			snapshot_name=self.name,
+			image_name=image.name,
 		)
-		parse_result(task.stdout)  # fail loud if the script produced no ATLAS_RESULT line
 		return image.name
+
+	def _run_promote(self, image_name: str) -> None:
+		"""Do the host half of a promote for the already-inserted inactive image row:
+		dd the snapshot LV into atlas-image-<name>, materialize the image dir, then flip
+		the row active. Idempotent — the host dd is a no-op if the LV exists, so a retry
+		re-drives it safely. On any host failure we delete the inactive anchor and
+		re-raise, so a failed promote leaves no ghost row (never a half-state). A killed
+		job (no raise) leaves the row inactive, which placement ignores."""
+		image = frappe.get_doc("Virtual Machine Image", image_name)
+		if image.is_active:
+			return  # already promoted (a raced retry) — nothing to do
+		try:
+			task = run_task(
+				server=self.server,
+				script="promote-snapshot-image",
+				variables={
+					"SNAPSHOT_ROOTFS_PATH": self.rootfs_path,
+					"IMAGE_NAME": image_name,
+					"DISK_GIGABYTES": str(self.disk_gigabytes),
+					"ROOTFS_FILENAME": image.rootfs_filename,
+					"SOURCE_IMAGE": self.source_image,
+					"KERNEL_FILENAME": image.kernel_filename,
+				},
+				virtual_machine=self.virtual_machine,
+				timeout_seconds=600,
+			)
+			parse_result(task.stdout)  # fail loud if the script produced no ATLAS_RESULT line
+		except Exception:
+			# Host dd failed (SSH error, non-zero exit, timeout, or a bad result line).
+			# Drop the inactive anchor so a retry starts clean rather than colliding with
+			# a ghost row, then re-raise so the failure surfaces in the job log.
+			frappe.delete_doc("Virtual Machine Image", image.name, ignore_permissions=True, force=True)
+			# nosemgrep: frappe-manual-commit -- persist the anchor deletion before re-raising so the failed promote leaves no ghost row
+			frappe.db.commit()
+			raise
+
+		# The LV exists and the image dir is materialized — flip the anchor active so
+		# placement can provision from it.
+		image.db_set("is_active", 1)
 
 	def on_trash(self) -> None:
 		"""Remove the on-host snapshot LV when the row is deleted.
@@ -393,3 +447,15 @@ class VirtualMachineSnapshot(Document):
 			virtual_machine=virtual_machine,
 			timeout_seconds=60,
 		)
+
+
+def run_promote(snapshot_name: str, image_name: str) -> None:
+	"""Background-job entrypoint (enqueued by promote_to_image). Runs the host dd +
+	activation for an already-inserted inactive image row. No-op if the snapshot is
+	gone (operator deleted it) or the image already active (a raced retry)."""
+	if not frappe.db.exists("Virtual Machine Snapshot", snapshot_name):
+		return
+	if not frappe.db.exists("Virtual Machine Image", image_name):
+		return  # anchor was cleaned up by a prior failed run; nothing to drive
+	snapshot = frappe.get_doc("Virtual Machine Snapshot", snapshot_name)
+	snapshot._run_promote(image_name)
