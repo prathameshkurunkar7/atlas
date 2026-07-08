@@ -62,10 +62,16 @@ def image_for_version(frappe_version: str | None) -> str:
 	"""Resolve a Frappe version token to its active admin bench image
 	(`bench-<token>-admin`) — the Pilot admin console `create_vm` stands up — falling
 	back to the configured default when the token is unset or has no active admin image,
-	so an unknown/unbuilt version never blocks provisioning."""
+	so an unknown/unbuilt version never blocks provisioning.
+
+	Resolves through `version_image_map` rather than reconstructing the image name: a
+	rebaked image carries a generation suffix (`bench-v16-1-admin`) the version token
+	(`v16`) can't rebuild, so the map — keyed by the same stripped token
+	`version_from_image` produces — is the one source both the visible map and the
+	provisioning path share, and can't drift."""
 	if frappe_version:
-		image = f"{BENCH_IMAGE_PREFIX}{frappe_version}{ADMIN_IMAGE_SUFFIX}"
-		if frappe.db.exists("Virtual Machine Image", {"name": image, "is_active": 1}):
+		image = version_image_map().get(frappe_version)
+		if image:
 			return image
 	return default_image()
 
@@ -73,28 +79,47 @@ def image_for_version(frappe_version: str | None) -> str:
 def version_image_map() -> dict[str, str]:
 	"""The version→admin-image map Central resolves a picked Frappe version through.
 
-	One entry per active admin bench image (`bench-<token>-admin`): `{token: image}`,
-	e.g. `{"v16": "bench-v16-admin"}`. Same source as `available_frappe_versions` (the
-	tokens Central offers) and `image_for_version` (what each resolves to) — built here
-	so the visible map and the provisioning path can't drift. Operator-visible only; the
-	authoritative resolve stays `image_for_version`."""
+	One entry per active admin bench image: `{token: image_name}`, e.g.
+	`{"v16": "bench-v16-admin"}`. The key is the clean version token Central offers and
+	looks up (`version_from_image` strips any rebake generation); the value is the exact
+	image name to provision from, whatever it's called (`bench-v16-1-admin`). This IS the
+	shared source `image_for_version` resolves through, so the operator-visible map and
+	the provisioning path can't drift.
+
+	When a version has been rebaked, the old image (`bench-v16-admin`) and the new
+	(`bench-v16-1-admin`) are both active — the old can't be deleted while a snapshot
+	pins it — and both strip to the same `v16` key. Order oldest-first so the newest
+	generation is written last and wins the key: the rebake is the whole point."""
 	names = frappe.get_all(
 		"Virtual Machine Image",
 		filters={"is_active": 1, "image_name": ["like", f"{BENCH_IMAGE_PREFIX}%{ADMIN_IMAGE_SUFFIX}"]},
 		pluck="image_name",
+		order_by="creation asc",
 		ignore_permissions=True,
 	)
 	return {version_from_image(name): name for name in names if version_from_image(name)}
 
 
 def version_from_image(image: str | None) -> str | None:
-	"""The Frappe version token a bench image carries (`bench-v16` → `v16`), or None
-	for a non-bench/plain image. Central mirrors this as the VM's provisioned version."""
+	"""The Frappe version token a bench image carries (`bench-v16-admin` → `v16`), or
+	None for a non-bench/plain image. Central mirrors this as the VM's provisioned
+	version, and looks a picked version up by this token.
+
+	A rebaked generation carries a trailing `-<n>` before the mode suffix
+	(`bench-v16-1-admin`) so the fresh image can coexist with the old one (which can't
+	be deleted while snapshots pin it). That generation is invisible to Central — it
+	still offers and resolves the clean `v16` — so the token strips it: the newest
+	active image for a version wins the key in `version_image_map`."""
 	if not image or not image.startswith(BENCH_IMAGE_PREFIX):
 		return None
 	token = image[len(BENCH_IMAGE_PREFIX) :]
 	if token.endswith(ADMIN_IMAGE_SUFFIX):
 		token = token[: -len(ADMIN_IMAGE_SUFFIX)]
+	# Drop a trailing `-<digits>` rebake generation: `v16-1` → `v16`, `nightly-2` →
+	# `nightly`. A bare numeric token (an image literally named `bench-1`) is left as-is.
+	base, sep, gen = token.rpartition("-")
+	if sep and base and gen.isdigit():
+		token = base
 	return token or None
 
 
