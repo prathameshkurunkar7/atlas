@@ -246,10 +246,14 @@ RECIPES: dict[str, "ImageRecipe"] = {
 	# Nightly tracks the moving `develop` of both Frappe and ERPNext. The bake records
 	# the resolved commit SHAs into the Image Build for traceability (image_build.run),
 	# since the inputs float.
+	#
+	# TEMPORARY: Frappe is pinned to `feature/cloud-settings` (not `develop`) for the
+	# extra cloud-settings commits create_site needs before they land on develop.
+	# Revert to `develop` once https://github.com/frappe/frappe/pull/40590 merges.
 	"bench-nightly": _bench_variant(
 		"bench-nightly",
 		"Bench nightly (develop)",
-		frappe_branch="develop",
+		frappe_branch="feature/cloud-settings",
 		erpnext_branch="develop",
 		python_version="3.14",
 		warm_entrypoint="warm.sh",
@@ -283,10 +287,13 @@ RECIPES: dict[str, "ImageRecipe"] = {
 		python_version="3.11",
 		build_mode="admin",
 	),
+	# TEMPORARY: mirrors the site twin's `feature/cloud-settings` pin (the admin
+	# twin tracks the site twin — one edit per bump). Revert to `develop` with the
+	# site twin once https://github.com/frappe/frappe/pull/40590 merges.
 	"bench-nightly-admin": _bench_variant(
 		"bench-nightly-admin",
 		"Bench nightly admin (develop)",
-		frappe_branch="develop",
+		frappe_branch="feature/cloud-settings",
 		erpnext_branch="develop",
 		python_version="3.14",
 		build_mode="admin",

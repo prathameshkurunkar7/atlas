@@ -150,7 +150,9 @@ class TestRecipeRegistry(IntegrationTestCase):
 		self.assertEqual(
 			(v15.frappe_branch, v15.erpnext_branch, v15.python_version), ("version-15", "version-15", "3.11")
 		)
-		self.assertEqual((nightly.frappe_branch, nightly.erpnext_branch), ("develop", "develop"))
+		self.assertEqual(
+			(nightly.frappe_branch, nightly.erpnext_branch), ("feature/cloud-settings", "develop")
+		)
 		# All three share the proven bench-cli ref + the bench source tree + sizing.
 		self.assertEqual({v16.bench_cli_ref, v15.bench_cli_ref, nightly.bench_cli_ref}, {v16.bench_cli_ref})
 		self.assertTrue(v16.bench_cli_ref)
@@ -459,9 +461,9 @@ class TestRenderBenchToml(IntegrationTestCase):
 		self.assertNotIn('python = "3.14"', rendered)
 		self.assertNotIn('branch = "version-16"', rendered)
 
-	def test_renders_develop_for_nightly(self) -> None:
+	def test_renders_frappe_branch_for_nightly(self) -> None:
 		rendered = image_builder._render_bench_toml(_NIGHTLY)
-		self.assertIn('branch = "develop"', rendered)
+		self.assertIn('branch = "feature/cloud-settings"', rendered)
 		self.assertIn('python = "3.14"', rendered)
 
 	def test_render_is_a_noop_shape_for_v16(self) -> None:
