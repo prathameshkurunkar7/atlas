@@ -235,6 +235,43 @@ class TestImageBuildRun(IntegrationTestCase):
 			vm_name = image_build_module._provision_build_vm(build, get_recipe("proxy"))
 		self.assertFalse(frappe.db.get_value("Virtual Machine", vm_name, "build_mode"))
 
+	def test_cold_snapshot_syncs_guest_before_stopping(self) -> None:
+		# The bug this guards: build.sh's last write (bench-domain-provider) was still
+		# dirty in the guest page cache when the plain `systemctl stop` KILLED the guest,
+		# so ext4 journalled the inode but not the data → the snapshot captured a 0-byte
+		# binary that fails at deploy with `Exec format error`. The cold snapshot must
+		# flush the guest BEFORE it stops it, so the capture is durable.
+		from atlas.atlas.image_recipes import get_recipe
+
+		recipe = get_recipe("bench-v16")
+		vm = self._fake_vm(status="Running")
+		with (
+			patch.object(image_build_module.frappe, "get_doc", return_value=vm),
+			patch.object(image_build_module, "_sync_guest_before_stop") as m_sync,
+		):
+			image_build_module._stop_and_snapshot(None, recipe, vm.name)
+		m_sync.assert_called_once_with(vm.name)
+		vm.stop.assert_called_once()
+		vm.snapshot.assert_called_once_with(title=recipe.snapshot_title)
+
+	def test_sync_guest_before_stop_noops_when_not_running(self) -> None:
+		# A guest that is already Stopped has nothing live to flush (and no VM to SSH),
+		# so the sync is a clean no-op — it never reaches for a connection.
+		vm = self._fake_vm(status="Stopped")
+		with patch.object(image_build_module.frappe, "get_doc", return_value=vm):
+			image_build_module._sync_guest_before_stop(vm.name)
+		vm.stop.assert_not_called()
+
+	def _fake_vm(self, status: str):
+		from unittest.mock import MagicMock
+
+		vm = MagicMock()
+		vm.name = "build-vm-1"
+		vm.status = status
+		# reload() re-reads status; keep it Stopped after a stop so the code path is stable.
+		vm.reload.side_effect = lambda: setattr(vm, "status", "Stopped")
+		return vm
+
 	def test_records_build_inputs_from_task_stdout(self) -> None:
 		# _record_build_inputs harvests the ATLAS_BUILD_*= lines build.sh stamped into
 		# the build Task's stdout into build_inputs JSON. Insert a REAL Task row (the

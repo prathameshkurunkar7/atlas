@@ -301,12 +301,38 @@ def _wait_for_vm_running(vm_name: str, timeout_seconds: int = 1500, poll_seconds
 	frappe.throw(f"Build VM {vm_name} did not reach Running within {timeout_seconds}s")
 
 
+def _sync_guest_before_stop(vm_name: str) -> None:
+	"""Flush the guest's page cache to its disk before we terminate it.
+
+	The build path stops the VM with a plain `systemctl stop` of the firecracker
+	unit — that KILLS the guest, it does not ACPI-shut-it-down, so the guest never
+	runs its own `sync`. Anything still dirty in the guest page cache at that instant
+	is lost: ext4 journals the inode + dirent but not the data, so the snapshot
+	captures the file as 0 bytes. build.sh's own trailing `sync` covers the normal
+	case, but this is the durable seam — flush again right before the terminate so a
+	late write from anywhere (build.sh, a warm arm, an operator) is captured whole.
+	Best-effort: a guest we cannot reach is about to be stopped anyway."""
+	from atlas.atlas._ssh.transport import run_ssh, ssh_key_file
+	from atlas.atlas.ssh import connection_for_guest
+
+	vm = frappe.get_doc("Virtual Machine", vm_name)
+	if vm.status != "Running":
+		return
+	try:
+		connection = connection_for_guest(vm)
+		with ssh_key_file(connection.ssh_private_key) as key_path:
+			run_ssh(connection, key_path, "sync", timeout_seconds=60)
+	except Exception:
+		frappe.log_error(f"guest sync before snapshot stop failed for {vm_name}")
+
+
 def _stop_and_snapshot(build, recipe, vm_name: str) -> str:
 	"""Stop the build VM and snapshot it. A Stopped VM gives a clean unmount → a
 	flush-consistent ext4 (Virtual Machine.snapshot's safe default), and the
 	snapshot is the rollable artifact. Returns the snapshot name."""
 	vm = frappe.get_doc("Virtual Machine", vm_name)
 	if vm.status != "Stopped":
+		_sync_guest_before_stop(vm_name)
 		vm.stop()
 		vm.reload()
 	return vm.snapshot(title=recipe.snapshot_title)
