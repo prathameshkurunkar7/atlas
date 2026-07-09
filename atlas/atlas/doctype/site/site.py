@@ -308,14 +308,21 @@ def auto_provision(
 
 	  1. clone the backing VM from the golden bench snapshot and provision it,
 	  2. wait for the VM to boot (SSH up),
-	  3. run deploy-site.py in the guest,
-	  4. wait for an HTTP 200 from the guest :80 — the readiness gate (Contract B),
-	  5. create the Subdomain row (this is what makes the proxy route it),
+	  3. create the Subdomain row (this is what makes the proxy route it) — done
+	     BEFORE the deploy so the fleet reconcile runs while the guest deploys,
+	  4. run deploy-site.py in the guest,
+	  5. wait for an HTTP 200 from the guest :80 — the readiness gate (Contract B),
 	  6. mark Running.
+
+	The Subdomain is created right after the VM is Running (step 3), not after the
+	readiness gate: the proxy route needs only the FQDN + the VM's /128, both present
+	once the VM boots, and registering it up front lets the proxy catch up in parallel
+	with the deploy so a tenant redirected the instant the Site flips Running doesn't
+	beat the proxy sync.
 
 	On any failure the Site is marked Failed (fail loud) and the exception is
 	re-raised so the Task/job log carries it. No-op if the Site has moved past
-	Pending (operator intervened, a manual retry raced us). Steps 3-4 are plan
+	Pending (operator intervened, a manual retry raced us). Steps 4-5 are plan
 	03's contract — this owns the orchestration, 03 owns the script + probe.
 
 	Every status transition is committed (`_set_status`) so Central sees progress
@@ -355,6 +362,17 @@ def auto_provision(
 		frappe.db.commit()
 		clock.stage(f"wait for VM {vm_name} to boot (Running)")
 		_wait_for_vm_running(vm_name)
+		# Register the proxy route AS SOON AS the VM has an address — before the long
+		# deploy + HTTP-readiness waits, not after. The Subdomain's after_insert enqueues
+		# the fleet reconcile (a separate `long` job), so the proxy learns the FQDN→/128
+		# map while the guest deploy is still running. Otherwise the tenant, redirected to
+		# the FQDN the moment the Site flips Running, races a proxy that hasn't been synced
+		# yet. The route needs only the FQDN + the VM's /128 (`_denormalize_address`), both
+		# present once the VM is Running; the deploy result is not a prerequisite.
+		clock.stage("create Subdomain (proxy route)")
+		subdomain_name = _create_subdomain(site, vm_name)
+		site.db_set("subdomain_doc", subdomain_name)
+		frappe.db.commit()
 		_set_status(site, "Deploying")
 		# Resolve the attached Pilot's console FQDN up front (deterministic from the
 		# site subdomain, disambiguated on collision) and thread it into BOTH the
@@ -384,9 +402,6 @@ def auto_provision(
 		)
 		clock.stage("wait for HTTP 200 from guest :80 (Contract B)")
 		_wait_for_http(site, vm_name)
-		clock.stage("create Subdomain (proxy route)")
-		subdomain_name = _create_subdomain(site, vm_name)
-		site.db_set("subdomain_doc", subdomain_name)
 		# Stand up the bench admin console (a Pilot) on this SAME backing VM, fronted at
 		# `<subdomain>-pilot.<region>` — the front door Central's Asset resolves for
 		# "Open" (front_door_for_vm prefers Pilot). The customer's Frappe site is this

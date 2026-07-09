@@ -315,6 +315,7 @@ class TestSiteOrchestration(IntegrationTestCase):
 		with (
 			patch.object(site_module, "_provision_backing_vm", return_value="cloned-vm"),
 			patch.object(site_module, "_wait_for_vm_running"),
+			patch.object(site_module, "_create_subdomain", return_value="sub-1"),
 			patch.object(site_module, "_deploy_site", side_effect=RuntimeError("deploy broke")),
 			patch.object(site_module.frappe.db, "commit"),
 		):
@@ -322,8 +323,11 @@ class TestSiteOrchestration(IntegrationTestCase):
 				site_module.auto_provision(site.name)
 		site.reload()
 		self.assertEqual(site.status, "Failed")
-		# No Subdomain was created on the failed path.
-		self.assertFalse(site.subdomain_doc)
+		# The Subdomain (proxy route) is registered BEFORE the deploy, so a deploy that
+		# then fails leaves the route stamped — it points at a Failed VM (the proxy
+		# 502s until a retry/terminate), the deliberate cost of registering up front so
+		# a successful deploy's proxy sync overlaps the deploy instead of trailing it.
+		self.assertEqual(site.subdomain_doc, "sub-1")
 		# The deploy phase was entered (stamped) but never finished — so the page
 		# shows it as the broken phase with an elapsed-until-failure time, and the
 		# running phase never started (no stamp → no time shown).

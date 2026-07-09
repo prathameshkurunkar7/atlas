@@ -223,8 +223,11 @@ class TestPilot(IntegrationTestCase):
 			pilot_module.auto_provision(pilot.name)
 		pilot.reload()
 		self.assertEqual(pilot.status, "Failed")
-		# The mint failed before the route, so no Subdomain was created.
-		self.assertFalse(pilot.subdomain_doc)
+		# The route is registered BEFORE the deploy, so a deploy that then fails leaves
+		# the Subdomain stamped — it points at a Failed VM (the proxy 502s until a
+		# retry/terminate), the deliberate cost of registering up front so a successful
+		# deploy's proxy sync overlaps the deploy instead of trailing it.
+		self.assertTrue(pilot.subdomain_doc)
 
 	# ----- regenerate ----------------------------------------------------
 

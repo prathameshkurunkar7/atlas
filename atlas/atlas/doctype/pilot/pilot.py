@@ -245,12 +245,15 @@ class Pilot(Document):
 
 def auto_provision(pilot_name: str) -> None:
 	"""Background-job entrypoint. Wait for the (already-created) backing VM to boot,
-	mint the one-click login URL in the booted guest, create the Subdomain that puts
-	the pilot on the front door, and THEN mark the pilot Running — the same
-	wait→deploy→mint→route ordering Site.auto_provision uses, so the single Running
-	event carries the handoff. No-op if the pilot has moved past Pending (operator
-	intervened, a manual retry raced us). Fail loud so a pilot whose mint fails is
-	Failed, not a silently login-less Running.
+	create the Subdomain that puts the pilot on the front door, mint the one-click
+	login URL in the booted guest, and THEN mark the pilot Running — the same
+	wait→route→deploy→mint ordering Site.auto_provision uses, so the single Running
+	event carries the handoff. The Subdomain is created BEFORE the deploy (it needs
+	only the FQDN + the VM's /128, both present once the VM boots) so the proxy
+	reconcile overlaps the deploy instead of trailing it — an operator redirected the
+	instant the Pilot flips Running doesn't beat the proxy sync. No-op if the pilot has
+	moved past Pending (operator intervened, a manual retry raced us). Fail loud so a
+	pilot whose mint fails is Failed, not a silently login-less Running.
 
 	The backing VM was created synchronously in `after_insert` (so create_vm could
 	return its identity); it auto-provisions ITSELF (its own after_insert boot job) —
@@ -277,17 +280,27 @@ def auto_provision(pilot_name: str) -> None:
 		_trace(f"waiting for backing VM {pilot.virtual_machine} to boot (Running) …")
 		_t = time.monotonic()
 		_wait_for_vm_running(pilot.virtual_machine)
-		_trace("VM Running; minting login URL (in-guest deploy) …", since=_t)
+		# Register the proxy route AS SOON AS the VM has an address — before the long
+		# in-guest deploy, not after. The Subdomain's after_insert enqueues the fleet
+		# reconcile (a separate `long` job), so the proxy learns the FQDN→/128 map while
+		# the guest deploy still runs. Otherwise the operator, redirected to the FQDN the
+		# moment the Pilot flips Running, races a proxy that hasn't synced yet. The route
+		# needs only the FQDN + the VM's /128, both present once the VM is Running; the
+		# deploy result is not a prerequisite. COMMIT so the after_commit reconcile fires
+		# now, overlapping the deploy. (Mirrors Site.auto_provision.)
+		_trace("VM Running; creating Subdomain (proxy route) …", since=_t)
+		_t = time.monotonic()
+		subdomain_name = _create_subdomain(pilot)
+		pilot.db_set("subdomain_doc", subdomain_name)
+		# nosemgrep: frappe-manual-commit -- fire the after_commit proxy reconcile now so it overlaps the deploy
+		frappe.db.commit()
+		_trace("Subdomain created; minting login URL (in-guest deploy) …", since=_t)
 		_t = time.monotonic()
 		result = _deploy(pilot)
 		pilot._stamp_login(result)
 		pilot.db_set("login_url", pilot.login_url)
 		pilot.db_set("login_url_expires_at", pilot.login_url_expires_at)
-		_trace("login URL minted; creating Subdomain (proxy route) …", since=_t)
-		_t = time.monotonic()
-		subdomain_name = _create_subdomain(pilot)
-		pilot.db_set("subdomain_doc", subdomain_name)
-		_trace("Subdomain created; marking Running …", since=_t)
+		_trace("login URL minted; marking Running …", since=_t)
 		pilot.db_set("status", "Running")
 		# db_set skips on_update, so the status event that carries the login handoff
 		# won't fire on its own — emit it explicitly. Its delivery is enqueued
