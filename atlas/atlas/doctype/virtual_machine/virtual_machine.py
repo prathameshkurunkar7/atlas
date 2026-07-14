@@ -1255,18 +1255,15 @@ class VirtualMachine(Document):
 
 
 def _routing_base_url() -> str:
-	"""The Atlas controller base URL a guest's routing client POSTs to (spec/18).
+	"""The Satellite orchestrator base URL a guest's routing client POSTs to (spec/28:
+	routing moved off Atlas to the Satellite).
 
-	`frappe.utils.get_url()` resolves the public site URL (honoring `host_name` /
-	the request host behind the proxy). Returns "" if it can't be resolved (no
-	configured host_name and no request context — e.g. a bare worker job before
-	host_name is set), which the Task runner drops, leaving /etc/atlas-routing.env
-	unwritten and the guest client a clean no-op. NON-SECRET, so there is no harm in
-	injecting it broadly."""
-	try:
-		return frappe.utils.get_url() or ""
-	except Exception:
-		return ""
+	Read from `Atlas Settings.satellite_routing_base_url` — the Satellite's public site
+	URL (e.g. `https://orchestrator.blr1.frappe.dev`). Returns "" when unset, which the
+	Task runner drops, leaving /etc/atlas-routing.env unwritten and the guest client a
+	clean no-op (an Atlas with no Satellite, or before the URL is configured). NON-SECRET,
+	so there is no harm in injecting it broadly."""
+	return frappe.db.get_single_value("Atlas Settings", "satellite_routing_base_url") or ""
 
 
 def _cgroup_values(interleaved: list[str]) -> list[str]:
