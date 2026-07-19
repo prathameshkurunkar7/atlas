@@ -33,6 +33,5 @@ class PowerDNSSettings(Document):
 	def test_connection(self) -> dict:
 		from atlas.atlas import dns
 
-		dns_provider_type = frappe.db.get_single_value("Atlas Settings", "dns_provider_type")
-		result = dns.for_dns_provider_type(dns_provider_type or "PowerDNS").authenticate()
+		result = dns.for_dns_provider_type("PowerDNS").authenticate()
 		return dataclasses.asdict(result)
