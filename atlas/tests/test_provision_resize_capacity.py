@@ -23,6 +23,10 @@ class TestProvisionResizeCapacity(IntegrationTestCase):
 	def setUp(self) -> None:
 		_clean_virtual_machines()
 		frappe.db.set_single_value("Atlas Settings", "overprovision_factor", 1)
+		# Isolate the resize add-back arithmetic from the host memory reserve so the
+		# ceilings below are the host's raw totals (the reserve has its own coverage in
+		# test_api_server_capacity) — parallels the overprovision_factor neutralisation.
+		frappe.db.set_single_value("Atlas Settings", "host_memory_reserve_megabytes", 0)
 		self.provider = make_provider("resize-capacity-provider")
 		for name in frappe.get_all("Server", filters={"status": "Active"}, pluck="name"):
 			frappe.db.set_value("Server", name, "status", "Draining")
