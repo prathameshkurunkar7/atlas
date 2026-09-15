@@ -19,7 +19,7 @@ These rules apply to the whole Atlas monorepo. Keep review findings concise and 
 
 ## Commits and pull requests
 
-- Flag commit subjects that do not use the short Conventional Commit format `type(kebab-case-scope): Sentence case`.
+- Flag commit subjects that do not use the short Conventional Commit format `type(kebab-case-scope): lower case`.
 - Flag long commit subjects.
 - Flag pull request descriptions that do not use ASD-STE100 Simplified Technical English.
 - Flag bug-fix descriptions that do not state the issue first and then give a short overview.
