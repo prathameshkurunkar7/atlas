@@ -16,12 +16,14 @@ from atlas.api.routes.virtual_machines import (
 	start_virtual_machine,
 	stop_virtual_machine,
 	update_virtual_machine_compute,
+	update_virtual_machine_network,
 )
 from atlas.api.tests.test_support import OTHER_TENANT_ID, TENANT_ID, api_request, call_route
+from atlas.vm.core.metal_models import MetalFirewall, MetalFirewallRule
 
 CREATE_BODY = {
 	"image_id": "system-image",
-	"vcpus": 2,
+	"cpu_millicores": 2000,
 	"memory_mib": 2048,
 	"disk_mib": 20480,
 }
@@ -33,7 +35,8 @@ def build_virtual_machine(tenant_id: int = TENANT_ID, **overrides) -> SimpleName
 		"name": "vm-00001",
 		"tenant_id": tenant_id,
 		"virtual_machine_image": "system-image",
-		"vcpus": 2,
+		"architecture": "amd64",
+		"cpu_millicores": 2000,
 		"memory_mib": 2048,
 		"disk_mib": 20480,
 		"sleep_after_idle_seconds": 0,
@@ -48,6 +51,7 @@ def build_virtual_machine(tenant_id: int = TENANT_ID, **overrides) -> SimpleName
 		"update_compute": Mock(),
 		"attach_ip_address": Mock(),
 		"detach_ip_address": Mock(),
+		"update_network": Mock(),
 	}
 	values.update(overrides)
 	return SimpleNamespace(**values)
@@ -65,6 +69,11 @@ def build_metal_information() -> SimpleNamespace:
 				wireguard_mesh_ipv6="fdaa:1::5",
 				private_network_throughput_mibps=0,
 				public_network_throughput_mibps=0,
+				firewall=MetalFirewall(
+					enabled=True,
+					inbound=(MetalFirewallRule("tcp", "22", ("203.0.113.0/24",)),),
+					outbound=(),
+				),
 			),
 			guest=SimpleNamespace(
 				hostname="worker-1",
@@ -89,6 +98,14 @@ def stored_rows(rows: list[SimpleNamespace]):
 		return rows if doctype == "Virtual Machine" else query(doctype, *args, **kwargs)
 
 	return patch("atlas.api.routes.virtual_machines.frappe.get_list", side_effect=get_list)
+
+
+def stored_tags(tags: dict[str, dict[str, str]] | None = None):
+	"""Patch the tag query that a list route runs for its page of rows."""
+	return patch(
+		"atlas.api.routes.virtual_machines.read_tags_for",
+		side_effect=lambda doctype, names: {name: (tags or {}).get(name, {}) for name in names},
+	)
 
 
 def owned_document(virtual_machine: SimpleNamespace):
@@ -118,6 +135,8 @@ class TestVirtualMachineViews(UnitTestCase):
 		self.assertEqual(detail.network.mesh_ipv6, "fdaa:1::5")
 		self.assertEqual(detail.network.mac, "52:54:00:12:34:56")
 		self.assertEqual(detail.network.egress, "uplink")
+		self.assertTrue(detail.network.firewall.enabled)
+		self.assertEqual(detail.network.firewall.inbound[0].ports, "22")
 		self.assertEqual(detail.disk.iops, 500)
 		self.assertEqual(detail.disk.used_mib, 8123)
 		self.assertEqual(detail.guest.ssh_keys, ["ssh-ed25519 AAAA"])
@@ -178,6 +197,22 @@ class TestCreateVirtualMachine(UnitTestCase):
 		self.assertEqual(status, 201)
 		self.assertTrue(create.call_args.args[0].is_privileged)
 
+	def test_create_passes_the_firewall(self) -> None:
+		status, _, create = self.create(
+			{
+				**CREATE_BODY,
+				"firewall": {
+					"enabled": True,
+					"inbound": [{"protocol": "tcp", "ports": "22", "cidrs": ["203.0.113.0/24"]}],
+				},
+			}
+		)
+
+		self.assertEqual(status, 201)
+		firewall = create.call_args.args[0].firewall
+		self.assertTrue(firewall.enabled)
+		self.assertEqual(firewall.inbound[0].cidrs, ("203.0.113.0/24",))
+
 	def test_create_rejects_a_field_the_caller_cannot_set(self) -> None:
 		for field in ("tenant_id", "server", "is_sleepy", "idle_timeout_seconds"):
 			status, body, _ = self.create({**CREATE_BODY, field: 1})
@@ -185,8 +220,8 @@ class TestCreateVirtualMachine(UnitTestCase):
 			self.assertEqual(status, 400)
 			self.assertIn(field, [item["name"] for item in body["error"]["fields"]])
 
-	def test_create_rejects_values_that_are_not_positive(self) -> None:
-		status, _, _ = self.create({**CREATE_BODY, "vcpus": 0})
+	def test_create_rejects_cpu_below_the_minimum(self) -> None:
+		status, _, _ = self.create({**CREATE_BODY, "cpu_millicores": 99})
 
 		self.assertEqual(status, 400)
 
@@ -207,6 +242,7 @@ class TestReadVirtualMachines(UnitTestCase):
 			),
 			stored_rows(rows) as get_list,
 			patch("atlas.api.routes.virtual_machines.get_reported_state_rows", return_value={}),
+			stored_tags(),
 		):
 			status, body = call_route(list_virtual_machines)
 
@@ -227,6 +263,7 @@ class TestReadVirtualMachines(UnitTestCase):
 				"atlas.api.routes.virtual_machines.get_reported_state_rows",
 				return_value={"vm-00001": state},
 			),
+			stored_tags(),
 		):
 			status, body = call_route(list_virtual_machines)
 
@@ -243,6 +280,7 @@ class TestReadVirtualMachines(UnitTestCase):
 			api_request("GET", "/api/atlas/virtual-machines", tenant_id=TENANT_ID),
 			stored_rows(rows),
 			patch("atlas.api.routes.virtual_machines.get_reported_state_rows", return_value={}),
+			stored_tags(),
 		):
 			status, body = call_route(list_virtual_machines)
 
@@ -307,13 +345,58 @@ class TestVirtualMachineActions(UnitTestCase):
 
 
 class TestVirtualMachineConfiguration(UnitTestCase):
+	def test_network_change_passes_a_partial_firewall(self) -> None:
+		with (
+			api_request(
+				"PATCH",
+				"/api/atlas/virtual-machines/vm-00001/network",
+				tenant_id=TENANT_ID,
+				json={"firewall": {"enabled": True}},
+			),
+			owned_document(virtual_machine := build_virtual_machine()),
+		):
+			status, _ = call_route(update_virtual_machine_network, virtual_machine_id="vm-00001")
+
+		self.assertEqual(status, 202)
+		virtual_machine.update_network.assert_called_once_with({"firewall": {"enabled": True}})
+
+	def test_network_change_rejects_an_invalid_firewall_rule(self) -> None:
+		with (
+			api_request(
+				"PATCH",
+				"/api/atlas/virtual-machines/vm-00001/network",
+				tenant_id=TENANT_ID,
+				json={"firewall": {"inbound": [{"protocol": "tcp", "ports": "0", "cidrs": ["0.0.0.0/0"]}]}},
+			),
+			owned_document(virtual_machine := build_virtual_machine()),
+		):
+			status, _ = call_route(update_virtual_machine_network, virtual_machine_id="vm-00001")
+
+		self.assertEqual(status, 400)
+		virtual_machine.update_network.assert_not_called()
+
+	def test_compute_change_rejects_cpu_below_the_minimum(self) -> None:
+		with (
+			api_request(
+				"PATCH",
+				"/api/atlas/virtual-machines/vm-00001/compute",
+				tenant_id=TENANT_ID,
+				json={"cpu_millicores": 99},
+			),
+			owned_document(virtual_machine := build_virtual_machine()),
+		):
+			status, _body = call_route(update_virtual_machine_compute, virtual_machine_id="vm-00001")
+
+		self.assertEqual(status, 400)
+		virtual_machine.update_compute.assert_not_called()
+
 	def test_compute_change_calls_the_virtual_machine_method(self) -> None:
 		with (
 			api_request(
 				"PATCH",
 				"/api/atlas/virtual-machines/vm-00001/compute",
 				tenant_id=TENANT_ID,
-				json={"vcpus": 4},
+				json={"cpu_millicores": 4000},
 			),
 			owned_document(virtual_machine := build_virtual_machine()),
 		):
@@ -321,7 +404,7 @@ class TestVirtualMachineConfiguration(UnitTestCase):
 
 		self.assertEqual(status, 202)
 		self.assertEqual(body["id"], "vm-00001")
-		virtual_machine.update_compute.assert_called_once_with({"virtual_cpu_count": 4})
+		virtual_machine.update_compute.assert_called_once_with({"cpu_millicores": 4000})
 
 	def test_compute_change_keeps_the_value_that_is_absent(self) -> None:
 		with (
@@ -329,14 +412,14 @@ class TestVirtualMachineConfiguration(UnitTestCase):
 				"PATCH",
 				"/api/atlas/virtual-machines/vm-00001/compute",
 				tenant_id=TENANT_ID,
-				json={"vcpus": 4},
+				json={"cpu_millicores": 4000},
 			),
 			owned_document(virtual_machine := build_virtual_machine()),
 		):
 			status, _ = call_route(update_virtual_machine_compute, virtual_machine_id="vm-00001")
 
 		self.assertEqual(status, 202)
-		virtual_machine.update_compute.assert_called_once_with({"virtual_cpu_count": 4})
+		virtual_machine.update_compute.assert_called_once_with({"cpu_millicores": 4000})
 
 	def test_an_idle_timeout_change_reaches_the_virtual_machine_method(self) -> None:
 		with (
@@ -403,6 +486,28 @@ class TestVirtualMachineConfiguration(UnitTestCase):
 			status, body = call_route(attach_virtual_machine_ip_address, virtual_machine_id="vm-00001")
 
 		return status, body, virtual_machine
+
+	def test_auto_borrows_one_pool_address(self) -> None:
+		with (
+			api_request(
+				"PUT",
+				"/api/atlas/virtual-machines/vm-00001/ip-address",
+				tenant_id=TENANT_ID,
+				json={"ip_address_id": "auto"},
+			),
+			owned_document(virtual_machine := build_virtual_machine()),
+			patch("atlas.api.routes.virtual_machines.frappe.db.get_value", return_value=None),
+			patch(
+				"atlas.api.routes.virtual_machines.IPAddressService",
+				return_value=Mock(borrow_from_pool=Mock(return_value="203.0.113.10")),
+			),
+			patch("atlas.api.routes.virtual_machines.get_available_ip_address") as get_available,
+		):
+			status, _ = call_route(attach_virtual_machine_ip_address, virtual_machine_id="vm-00001")
+
+		self.assertEqual(status, 202)
+		virtual_machine.attach_ip_address.assert_called_once_with("203.0.113.10")
+		get_available.assert_not_called()
 
 	def test_attaching_the_same_address_again_is_safe(self) -> None:
 		status, _, service = self.attach("203.0.113.10", "203.0.113.10")

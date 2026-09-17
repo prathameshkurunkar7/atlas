@@ -5,10 +5,18 @@ from typing import TYPE_CHECKING, Any, Literal
 from zoneinfo import ZoneInfo
 
 from frappe.utils import get_datetime, get_system_timezone
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from atlas.api.core.base import ListQuery, PatchPayload, StrictModel
-from atlas.vm.core.models import VirtualMachineCreateRequest
+from atlas.atlas.core.tags import read_tags
+from atlas.vm.core.models import (
+	MAXIMUM_CPU_MILLICORES,
+	MAXIMUM_FIREWALL_PREFIXES,
+	MINIMUM_CPU_MILLICORES,
+	FirewallConfiguration,
+	FirewallRule,
+	VirtualMachineCreateRequest,
+)
 
 if TYPE_CHECKING:
 	from atlas.metal_server.doctype.metal_server_ip_address.metal_server_ip_address import (
@@ -19,6 +27,8 @@ if TYPE_CHECKING:
 	from atlas.vm.doctype.virtual_machine_image.virtual_machine_image import VirtualMachineImage
 
 EgressMode = Literal["uplink", "mesh", "none"]
+FirewallProtocol = Literal["any", "tcp", "udp", "icmp"]
+AUTO_IP_ADDRESS = "auto"
 
 
 def to_unix_timestamp(value: str | datetime) -> int:
@@ -50,9 +60,9 @@ class JSONWebKeySetResponse(BaseModel):
 
 
 class ReserveIPAddressPayload(StrictModel):
-	"""Select the source of an IP address reservation."""
+	"""Optionally reserve an address the tenant already holds."""
 
-	source: Literal["pool", "provider"] = "pool"
+	ip_address_id: str | None = None
 
 
 class IPAddressResponse(BaseModel):
@@ -66,7 +76,9 @@ class IPAddressResponse(BaseModel):
 					"tenant_id": 7,
 					"address": "203.0.113.10",
 					"state": "reserved",
+					"reserved": True,
 					"virtual_machine_id": None,
+					"tags": {"pool": "edge"},
 					"created_at": 1788834165,
 				}
 			]
@@ -77,19 +89,25 @@ class IPAddressResponse(BaseModel):
 	tenant_id: int
 	address: str
 	state: str
+	reserved: bool
 	virtual_machine_id: str | None
+	tags: dict[str, str]
 	created_at: int
 
 	@classmethod
-	def from_document(cls, ip_address: MetalServerIPAddress) -> IPAddressResponse:
-		"""Build a response from an IP address document or query row."""
+	def from_document(
+		cls, ip_address: MetalServerIPAddress, tags: dict[str, str] | None = None
+	) -> IPAddressResponse:
+		"""Build a response from an IP address document, or from a query row with its tags."""
 		state = "reserved" if ip_address.status == "Allocated" else ip_address.status.lower()
 		return cls(
 			id=ip_address.name,
 			tenant_id=ip_address.tenant_id,
 			address=ip_address.address,
 			state=state,
+			reserved=bool(ip_address.reserved),
 			virtual_machine_id=ip_address.virtual_machine or None,
+			tags=read_tags(ip_address) if tags is None else tags,
 			created_at=to_unix_timestamp(ip_address.creation),
 		)
 
@@ -105,9 +123,7 @@ class ImageResponse(BaseModel):
 					"tenant_id": 7,
 					"title": "Worker snapshot",
 					"image_type": "machine",
-					"platform": "amd64",
-					"operating_system": "Ubuntu",
-					"operating_system_version": "24.04",
+					"architecture": "amd64",
 					"status": "available",
 					"enabled": True,
 					"cache_image": False,
@@ -116,6 +132,7 @@ class ImageResponse(BaseModel):
 					"kernel_size_mib": 8,
 					"transfer_progress": 100,
 					"transfer_error": None,
+					"tags": {"os": "Ubuntu", "os_version": "24.04"},
 					"created_at": 1788834165,
 				}
 			]
@@ -126,9 +143,7 @@ class ImageResponse(BaseModel):
 	tenant_id: int
 	title: str
 	image_type: str
-	platform: str
-	operating_system: str
-	operating_system_version: str
+	architecture: str
 	status: str
 	enabled: bool
 	cache_image: bool
@@ -137,19 +152,18 @@ class ImageResponse(BaseModel):
 	kernel_size_mib: int
 	transfer_progress: int
 	transfer_error: str | None
+	tags: dict[str, str]
 	created_at: int
 
 	@classmethod
-	def from_document(cls, image: VirtualMachineImage) -> ImageResponse:
-		"""Build a response from an image document or query row."""
+	def from_document(cls, image: VirtualMachineImage, tags: dict[str, str] | None = None) -> ImageResponse:
+		"""Build a response from an image document, or from a query row with its tags."""
 		return cls(
 			id=image.name,
 			tenant_id=image.tenant_id,
 			title=image.title,
 			image_type=image.image_type,
-			platform=image.platform,
-			operating_system=image.operating_system,
-			operating_system_version=image.operating_system_version,
+			architecture=image.architecture,
 			status=image.status.lower(),
 			enabled=bool(image.enabled),
 			cache_image=bool(image.cache_image),
@@ -158,6 +172,7 @@ class ImageResponse(BaseModel):
 			kernel_size_mib=image.kernel_size_mib,
 			transfer_progress=image.transfer_progress,
 			transfer_error=image.transfer_error or None,
+			tags=read_tags(image) if tags is None else tags,
 			created_at=to_unix_timestamp(image.creation),
 		)
 
@@ -212,11 +227,58 @@ class ImageDownloadResponse(BaseModel):
 		)
 
 
+class FirewallRulePayload(StrictModel):
+	"""One firewall allow rule."""
+
+	protocol: FirewallProtocol
+	ports: str = ""
+	cidrs: list[str] = Field(min_length=1)
+
+	@model_validator(mode="after")
+	def validate_rule(self) -> FirewallRulePayload:
+		"""Apply the shared firewall rule validation."""
+		FirewallRule.from_value(self.model_dump())
+		return self
+
+
+class FirewallPayload(StrictModel):
+	"""The complete desired firewall configuration."""
+
+	enabled: bool = False
+	inbound: list[FirewallRulePayload] = Field(default_factory=list)
+	outbound: list[FirewallRulePayload] = Field(default_factory=list)
+
+	@model_validator(mode="after")
+	def validate_effective_rule_count(self) -> FirewallPayload:
+		"""Limit the expanded CIDR count."""
+		count = sum(len(rule.cidrs) for rule in (*self.inbound, *self.outbound))
+		if count > MAXIMUM_FIREWALL_PREFIXES:
+			raise ValueError(f"Firewall must not exceed {MAXIMUM_FIREWALL_PREFIXES} prefix entries.")
+		return self
+
+
+class FirewallUpdatePayload(PatchPayload):
+	"""Selected firewall fields to replace."""
+
+	enabled: bool | None = None
+	inbound: list[FirewallRulePayload] | None = None
+	outbound: list[FirewallRulePayload] | None = None
+
+	@model_validator(mode="after")
+	def validate_effective_rule_count(self) -> FirewallUpdatePayload:
+		"""Reject a partial list that exceeds the complete firewall limit."""
+		rules = (self.inbound or []) + (self.outbound or [])
+		count = sum(len(rule.cidrs) for rule in rules)
+		if count > MAXIMUM_FIREWALL_PREFIXES:
+			raise ValueError(f"Firewall must not exceed {MAXIMUM_FIREWALL_PREFIXES} prefix entries.")
+		return self
+
+
 class CreateVirtualMachinePayload(StrictModel):
 	"""Values that create one virtual machine."""
 
 	image_id: str = Field(min_length=1)
-	vcpus: int = Field(gt=0)
+	cpu_millicores: int = Field(ge=MINIMUM_CPU_MILLICORES, le=MAXIMUM_CPU_MILLICORES)
 	memory_mib: int = Field(gt=0)
 	disk_mib: int = Field(gt=0)
 	hostname: str = ""
@@ -231,6 +293,7 @@ class CreateVirtualMachinePayload(StrictModel):
 	disk_iops: int = Field(default=0, ge=0)
 	private_network_throughput_mibps: int = Field(default=0, ge=0)
 	public_network_throughput_mibps: int = Field(default=0, ge=0)
+	firewall: FirewallPayload = Field(default_factory=FirewallPayload)
 
 	def to_domain_request(
 		self, tenant_id: int, image_name: str, ip_address_name: str | None
@@ -238,7 +301,7 @@ class CreateVirtualMachinePayload(StrictModel):
 		"""Build the domain request for this API payload."""
 		return VirtualMachineCreateRequest(
 			virtual_machine_image=image_name,
-			virtual_cpu_count=self.vcpus,
+			cpu_millicores=self.cpu_millicores,
 			memory_mib=self.memory_mib,
 			disk_mib=self.disk_mib,
 			tenant_id=tenant_id,
@@ -253,6 +316,7 @@ class CreateVirtualMachinePayload(StrictModel):
 			disk_iops=self.disk_iops,
 			private_network_throughput_mibps=self.private_network_throughput_mibps,
 			public_network_throughput_mibps=self.public_network_throughput_mibps,
+			firewall=FirewallConfiguration.from_value(self.firewall.model_dump()),
 			server_ip_address=ip_address_name,
 		)
 
@@ -260,16 +324,13 @@ class CreateVirtualMachinePayload(StrictModel):
 class ComputeUpdatePayload(PatchPayload):
 	"""New compute configuration."""
 
-	vcpus: int | None = Field(default=None, gt=0)
+	cpu_millicores: int | None = Field(default=None, ge=MINIMUM_CPU_MILLICORES, le=MAXIMUM_CPU_MILLICORES)
 	memory_mib: int | None = Field(default=None, gt=0)
 	sleep_after_idle_seconds: int | None = Field(default=None, ge=0, le=9_223_372_036)
 
 	def to_domain_changes(self) -> dict[str, Any]:
 		"""Return the field names that the VM service accepts."""
-		changes = self.model_dump(exclude_none=True)
-		if "vcpus" in changes:
-			changes["virtual_cpu_count"] = changes.pop("vcpus")
-		return changes
+		return self.model_dump(exclude_none=True)
 
 
 class DiskUpdatePayload(PatchPayload):
@@ -293,6 +354,7 @@ class NetworkUpdatePayload(PatchPayload):
 	egress: EgressMode | None = None
 	private_network_throughput_mibps: int | None = Field(default=None, ge=0)
 	public_network_throughput_mibps: int | None = Field(default=None, ge=0)
+	firewall: FirewallUpdatePayload | None = None
 
 
 class SSHKeysReplacementPayload(StrictModel):
@@ -310,7 +372,10 @@ class MetadataReplacementPayload(StrictModel):
 class IPAddressAssignmentPayload(StrictModel):
 	"""The public IPv4 address to attach."""
 
-	ip_address_id: str = Field(min_length=1)
+	ip_address_id: str = Field(
+		min_length=1,
+		description=f"A reserved address, or {AUTO_IP_ADDRESS} to borrow one from the shared pool.",
+	)
 
 
 class SnapshotPayload(StrictModel):
@@ -320,6 +385,7 @@ class SnapshotPayload(StrictModel):
 	image_type: Literal["machine", "system"] = "machine"
 	cache_image: bool = False
 	memory_snapshot: bool = False
+	tags: dict[str, str] = Field(default_factory=dict)
 
 
 class ConsoleTokenPayload(StrictModel):
@@ -347,10 +413,12 @@ class VirtualMachineResponse(BaseModel):
 					"id": "vm-00001",
 					"tenant_id": 7,
 					"image_id": "8f1c2d3e4b5a6978",
-					"vcpus": 2,
+					"architecture": "amd64",
+					"cpu_millicores": 2000,
 					"memory_mib": 2048,
 					"disk_mib": 20480,
 					"sleep_after_idle_seconds": 0,
+					"tags": {"env": "prod"},
 					"created_at": 1788834165,
 				}
 			]
@@ -360,23 +428,29 @@ class VirtualMachineResponse(BaseModel):
 	id: str
 	tenant_id: int
 	image_id: str
-	vcpus: int
+	architecture: str
+	cpu_millicores: int
 	memory_mib: int
 	disk_mib: int
 	sleep_after_idle_seconds: int
+	tags: dict[str, str]
 	created_at: int
 
 	@classmethod
-	def from_document(cls, virtual_machine: VirtualMachine) -> VirtualMachineResponse:
-		"""Build a response from a virtual machine document or query row."""
+	def from_document(
+		cls, virtual_machine: VirtualMachine, tags: dict[str, str] | None = None
+	) -> VirtualMachineResponse:
+		"""Build a response from a VM document, or from a query row with its tags."""
 		return cls(
 			id=virtual_machine.name,
 			tenant_id=virtual_machine.tenant_id,
 			image_id=virtual_machine.virtual_machine_image,
-			vcpus=virtual_machine.vcpus,
+			architecture=virtual_machine.architecture,
+			cpu_millicores=virtual_machine.cpu_millicores,
 			memory_mib=virtual_machine.memory_mib,
 			disk_mib=virtual_machine.disk_mib,
 			sleep_after_idle_seconds=virtual_machine.sleep_after_idle_seconds,
+			tags=read_tags(virtual_machine) if tags is None else tags,
 			created_at=to_unix_timestamp(virtual_machine.creation),
 		)
 
@@ -401,10 +475,10 @@ class VirtualMachineListResponse(VirtualMachineResponse):
 
 	@classmethod
 	def from_document_and_state(
-		cls, virtual_machine: VirtualMachine, state: Any | None
+		cls, virtual_machine: VirtualMachine, state: Any | None, tags: dict[str, str] | None = None
 	) -> VirtualMachineListResponse:
 		"""Build a list response from Atlas and the stored host state."""
-		stored = VirtualMachineResponse.from_document(virtual_machine)
+		stored = VirtualMachineResponse.from_document(virtual_machine, tags)
 		return cls(
 			**stored.model_dump(),
 			last_known_state=get_current_state(virtual_machine, state.status if state else None),
@@ -415,7 +489,7 @@ class VirtualMachineListResponse(VirtualMachineResponse):
 class VirtualMachineCompute(BaseModel):
 	"""The compute shape of one virtual machine."""
 
-	vcpus: int
+	cpu_millicores: int
 	memory_mib: int
 	sleep_after_idle_seconds: int
 
@@ -429,6 +503,22 @@ class VirtualMachineDisk(BaseModel):
 	used_mib: int | None
 
 
+class FirewallRuleResponse(BaseModel):
+	"""One desired firewall allow rule."""
+
+	protocol: FirewallProtocol
+	ports: str
+	cidrs: list[str]
+
+
+class FirewallResponse(BaseModel):
+	"""The complete desired firewall configuration."""
+
+	enabled: bool
+	inbound: list[FirewallRuleResponse]
+	outbound: list[FirewallRuleResponse]
+
+
 class VirtualMachineNetwork(BaseModel):
 	"""The addresses and network limits of one virtual machine."""
 
@@ -438,6 +528,7 @@ class VirtualMachineNetwork(BaseModel):
 	mac: str | None
 	private_network_throughput_mibps: int
 	public_network_throughput_mibps: int
+	firewall: FirewallResponse
 
 
 class VirtualMachineGuest(BaseModel):
@@ -463,7 +554,7 @@ class VirtualMachineDetailResponse(BaseModel):
 					"desired_state": "running",
 					"current_state": "running",
 					"error": None,
-					"compute": {"vcpus": 2, "memory_mib": 2048, "sleep_after_idle_seconds": 0},
+					"compute": {"cpu_millicores": 2000, "memory_mib": 2048, "sleep_after_idle_seconds": 0},
 					"disk": {"size_mib": 20480, "throughput_mibps": 0, "iops": 0, "used_mib": 8123},
 					"network": {
 						"egress": "uplink",
@@ -472,6 +563,7 @@ class VirtualMachineDetailResponse(BaseModel):
 						"mac": "52:54:00:12:34:56",
 						"private_network_throughput_mibps": 0,
 						"public_network_throughput_mibps": 0,
+						"firewall": {"enabled": False, "inbound": [], "outbound": []},
 					},
 					"guest": {
 						"hostname": "worker-1",
@@ -486,6 +578,8 @@ class VirtualMachineDetailResponse(BaseModel):
 	id: str
 	tenant_id: int
 	image_id: str
+	architecture: str
+	tags: dict[str, str]
 	created_at: int
 	is_privileged: bool
 	desired_state: str | None
@@ -507,13 +601,15 @@ class VirtualMachineDetailResponse(BaseModel):
 			id=virtual_machine.name,
 			tenant_id=virtual_machine.tenant_id,
 			image_id=virtual_machine.virtual_machine_image,
+			architecture=virtual_machine.architecture,
+			tags=read_tags(virtual_machine),
 			created_at=to_unix_timestamp(virtual_machine.creation),
 			is_privileged=bool(virtual_machine.is_privileged),
 			desired_state=desired.state if desired else None,
 			current_state=get_current_state(virtual_machine, observed.state if observed else None),
 			error=observed.error.message if observed and observed.error else None,
 			compute=VirtualMachineCompute(
-				vcpus=virtual_machine.vcpus,
+				cpu_millicores=virtual_machine.cpu_millicores,
 				memory_mib=virtual_machine.memory_mib,
 				sleep_after_idle_seconds=virtual_machine.sleep_after_idle_seconds,
 			),
@@ -533,6 +629,15 @@ class VirtualMachineDetailResponse(BaseModel):
 				),
 				public_network_throughput_mibps=(
 					desired.network.public_network_throughput_mibps if desired else 0
+				),
+				firewall=FirewallResponse.model_validate(
+					desired.network.firewall.as_dict()
+					if desired
+					else {
+						"enabled": False,
+						"inbound": [],
+						"outbound": [],
+					}
 				),
 			),
 			guest=VirtualMachineGuest(

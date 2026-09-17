@@ -14,6 +14,7 @@ from typing import cast
 
 if TYPE_CHECKING:
   from ..models.create_virtual_machine_payload_metadata import CreateVirtualMachinePayloadMetadata
+  from ..models.firewall_payload import FirewallPayload
 
 
 
@@ -28,13 +29,14 @@ class CreateVirtualMachinePayload:
     """ Values that create one virtual machine.
 
         Attributes:
+            cpu_millicores (int):
             disk_mib (int):
             image_id (str):
             memory_mib (int):
-            vcpus (int):
             disk_iops (int | Unset):  Default: 0.
             disk_throughput_mibps (int | Unset):  Default: 0.
             egress (CreateVirtualMachinePayloadEgress | Unset):  Default: CreateVirtualMachinePayloadEgress.UPLINK.
+            firewall (FirewallPayload | Unset): The complete desired firewall configuration.
             hostname (str | Unset):  Default: ''.
             ip_address_id (None | str | Unset):
             is_privileged (bool | Unset):  Default: False.
@@ -46,13 +48,14 @@ class CreateVirtualMachinePayload:
             user_data (str | Unset):  Default: ''.
      """
 
+    cpu_millicores: int
     disk_mib: int
     image_id: str
     memory_mib: int
-    vcpus: int
     disk_iops: int | Unset = 0
     disk_throughput_mibps: int | Unset = 0
     egress: CreateVirtualMachinePayloadEgress | Unset = CreateVirtualMachinePayloadEgress.UPLINK
+    firewall: FirewallPayload | Unset = UNSET
     hostname: str | Unset = ''
     ip_address_id: None | str | Unset = UNSET
     is_privileged: bool | Unset = False
@@ -69,13 +72,14 @@ class CreateVirtualMachinePayload:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.create_virtual_machine_payload_metadata import CreateVirtualMachinePayloadMetadata # noqa: PLC0415
+        from ..models.firewall_payload import FirewallPayload # noqa: PLC0415
+        cpu_millicores = self.cpu_millicores
+
         disk_mib = self.disk_mib
 
         image_id = self.image_id
 
         memory_mib = self.memory_mib
-
-        vcpus = self.vcpus
 
         disk_iops = self.disk_iops
 
@@ -85,6 +89,10 @@ class CreateVirtualMachinePayload:
         if not isinstance(self.egress, Unset):
             egress = self.egress.value
 
+
+        firewall: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.firewall, Unset):
+            firewall = self.firewall.to_dict()
 
         hostname = self.hostname
 
@@ -118,10 +126,10 @@ class CreateVirtualMachinePayload:
         field_dict: dict[str, Any] = {}
 
         field_dict.update({
+            "cpu_millicores": cpu_millicores,
             "disk_mib": disk_mib,
             "image_id": image_id,
             "memory_mib": memory_mib,
-            "vcpus": vcpus,
         })
         if disk_iops is not UNSET:
             field_dict["disk_iops"] = disk_iops
@@ -129,6 +137,8 @@ class CreateVirtualMachinePayload:
             field_dict["disk_throughput_mibps"] = disk_throughput_mibps
         if egress is not UNSET:
             field_dict["egress"] = egress
+        if firewall is not UNSET:
+            field_dict["firewall"] = firewall
         if hostname is not UNSET:
             field_dict["hostname"] = hostname
         if ip_address_id is not UNSET:
@@ -155,14 +165,15 @@ class CreateVirtualMachinePayload:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.create_virtual_machine_payload_metadata import CreateVirtualMachinePayloadMetadata # noqa: PLC0415
+        from ..models.firewall_payload import FirewallPayload # noqa: PLC0415
         d = dict(src_dict)
+        cpu_millicores = d.pop("cpu_millicores")
+
         disk_mib = d.pop("disk_mib")
 
         image_id = d.pop("image_id")
 
         memory_mib = d.pop("memory_mib")
-
-        vcpus = d.pop("vcpus")
 
         disk_iops = d.pop("disk_iops", UNSET)
 
@@ -174,6 +185,16 @@ class CreateVirtualMachinePayload:
             egress = UNSET
         else:
             egress = CreateVirtualMachinePayloadEgress(_egress)
+
+
+
+
+        _firewall = d.pop("firewall", UNSET)
+        firewall: FirewallPayload | Unset
+        if isinstance(_firewall,  Unset):
+            firewall = UNSET
+        else:
+            firewall = FirewallPayload.from_dict(_firewall)
 
 
 
@@ -214,13 +235,14 @@ class CreateVirtualMachinePayload:
         user_data = d.pop("user_data", UNSET)
 
         create_virtual_machine_payload = cls(
+            cpu_millicores=cpu_millicores,
             disk_mib=disk_mib,
             image_id=image_id,
             memory_mib=memory_mib,
-            vcpus=vcpus,
             disk_iops=disk_iops,
             disk_throughput_mibps=disk_throughput_mibps,
             egress=egress,
+            firewall=firewall,
             hostname=hostname,
             ip_address_id=ip_address_id,
             is_privileged=is_privileged,

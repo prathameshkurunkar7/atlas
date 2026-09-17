@@ -6,12 +6,12 @@ function storageClusterConfig(values) {
 		storage_node_count: values.storage_node_count,
 		replication_factor: values.replication_factor,
 		gateway: {
-			cpu: values.gateway_cpu,
+			cpu_millicores: values.gateway_cpu_millicores,
 			ram_gb: values.gateway_ram_gb,
 			disk_gb: values.gateway_disk_gb,
 		},
 		storage: {
-			cpu: values.storage_cpu,
+			cpu_millicores: values.storage_cpu_millicores,
 			ram_gb: values.storage_ram_gb,
 			disk_gb: values.storage_disk_gb,
 		},
@@ -30,7 +30,14 @@ function showProvisionDialog(frm) {
 				reqd: 1,
 				filters: { enabled: 1, status: "Available", image_type: "system" },
 			},
-			{ fieldname: "vcpus", fieldtype: "Int", label: __("vCPUs"), reqd: 1, default: 2 },
+			{
+				fieldname: "cpu_millicores",
+				fieldtype: "Int",
+				label: __("CPU (millicores)"),
+				description: __("1000 millicores equals one CPU core."),
+				reqd: 1,
+				default: 2000,
+			},
 			{
 				fieldname: "memory_mib",
 				fieldtype: "Int",
@@ -65,11 +72,12 @@ function showProvisionDialog(frm) {
 			},
 			{ fieldtype: "Column Break" },
 			{
-				fieldname: "gateway_cpu",
+				fieldname: "gateway_cpu_millicores",
 				fieldtype: "Int",
-				label: __("Gateway vCPUs"),
+				label: __("Gateway CPU (millicores)"),
+				description: __("1000 millicores equals one CPU core."),
 				reqd: 1,
-				default: 2,
+				default: 2000,
 			},
 			{
 				fieldname: "gateway_ram_gb",
@@ -87,11 +95,12 @@ function showProvisionDialog(frm) {
 			},
 			{ fieldtype: "Column Break" },
 			{
-				fieldname: "storage_cpu",
+				fieldname: "storage_cpu_millicores",
 				fieldtype: "Int",
-				label: __("Storage vCPUs"),
+				label: __("Storage CPU (millicores)"),
+				description: __("1000 millicores equals one CPU core."),
 				reqd: 1,
-				default: 4,
+				default: 4000,
 			},
 			{
 				fieldname: "storage_ram_gb",

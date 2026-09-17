@@ -8,7 +8,7 @@ For the control-plane overview, see [docs/vm-control-plane.md](../docs/vm-contro
 
 Atlas stores what was requested. Metal stores what is running. This module keeps that line: a Virtual Machine record holds the reservation and the request, and every runtime value is read through to Metal instead of copied into a field.
 
-The record name is the Metal VM ID. That single choice makes create idempotent, because a retry addresses the same resource.
+The record name is the Metal VM ID. Atlas assigns each name from the `vm-.#######` series. Deleting a record does not release its number. The stable name makes create idempotent, because a retry addresses the same resource.
 
 ## Types
 
@@ -16,7 +16,8 @@ The record name is the Metal VM ID. That single choice makes create idempotent, 
 |---|---|
 | `VirtualMachine` (DocType) | The reservation, permissions, and the whitelisted API. Runtime values read through. |
 | `VirtualMachineImage` (DocType) | The durable boot artifact and its immutable reference. |
-| `Virtual Machine State` (DocType) | The last status a host reported for one VM. The name is the VM name. |
+| `Virtual Machine State` (DocType) | The last status a host reported for one VM. The name is the VM name. It also answers whether a live VM still needs an image. |
+| `Atlas Tag` (DocType) | One key and value label on a Virtual Machine, a Virtual Machine Image, or a Metal Server IP Address. |
 | `VirtualMachineService` | Every operation that spans an Atlas record and a Metal host. |
 | `PlacementService` | Choosing and locking the host for a new VM. |
 | `MetalClient` | `/v1` HTTP transport and error classification. |
@@ -45,6 +46,8 @@ An uncertain response keeps the draft. Only a Metal `404` deletes it.
 
 Capacity comes from a Metal Server Usage sample, which Metal produced at some earlier moment. Placement subtracts every VM created after that sample and every uncertain draft, so a burst of requests cannot spend the same reported capacity twice.
 
+Only memory and storage limit placement. CPU entitlement is oversubscribed: a host accepts a VM when memory and storage are free, whatever the sum of `cpu_millicores` it already hosts. Available CPU stays in the ranking key, so placement still prefers the host with the most available millicores.
+
 The chosen Metal Server row is locked and its capacity rechecked before the draft is inserted. The lock is released by the commit, before Atlas calls Metal, so a slow host never holds a row.
 
 A sample older than the freshness limit is not used. Placement reports a synchronization fault instead of guessing.
@@ -65,6 +68,12 @@ Two scheduled jobs settle records that a lost response left uncertain: stale dra
 ## Images
 
 Virtual Machine Image is the durable boot artifact. `image_type` is `System` or `Machine`. Each image carries a tenant ID, and a Machine image inherits the tenant of its source virtual machine. System images are shared with every tenant. Machine images are visible only to their owning tenant. Each image has its own rootfs and kernel location, exact byte size, and SHA-256 value. The immutable reference uses the architecture and both artifact hashes.
+
+An image also carries `architecture` and a `tags` table. Use a tag for any other selection value. `build-ubuntu-base-image` writes `purpose` as `base`, and the operating system name and version as `os` and `os_version`.
+
+`purpose` says what an image is for, and `image_type` says who can boot it. A base image and a Pilot image are both `system` images, so only the tag separates them.
+
+A virtual machine reads its image once, at creation. It copies the architecture into its own `architecture` field and stores the image name as plain text. There is no link from a virtual machine to an image, so an image can be deleted while its virtual machines run. Placement and migration use the stored architecture and never read the image again.
 
 `artifact_storage` is the single owner of the artifact location. `Object Storage` uses the object keys and signs a URL for 24 hours. `Site File` uses two public site Files and their permanent URLs, which lets Atlas boot a VM before object storage exists. Only a System image can use `Site File`, and the tenant download route refuses one. `vm_image_storage_migration.py` moves an image to object storage after the credentials exist. Atlas Settings queues the migration when the object storage fields change, and a job every 15 minutes queues what is left. See [docs/images.md](../docs/images.md).
 
@@ -95,7 +104,9 @@ The image record keeps the source server, upload IDs, status, and errors. Atlas 
 
 ## Machine image deletion
 
-`vm_image_deletion.py` owns Machine image removal. The request marks the image `Deleting`, disables it, and queues a repeatable cleanup job. Atlas refuses the request while a virtual machine uses the image.
+`vm_image_deletion.py` owns Machine image removal. The request marks the image `Deleting`, disables it, and queues a repeatable cleanup job.
+
+A live virtual machine holds its image. A virtual machine is live when it is a draft, because Metal can still pull the artifacts, or when its host reports `running`, `stopped`, or `paused`. A terminating virtual machine, and one with no reported state, does not hold the image. While an image is held, the request archives the image instead of deleting it. A job every 30 seconds reclaims an archived image after its last live virtual machine is gone.
 
 The job aborts every incomplete multipart upload, deletes both stored objects, removes the remaining Metal staging data, and then deletes the record. If a Metal or object storage cleanup operation fails, Atlas keeps the image in `Deleting`, records the error, and queues it again every 30 seconds.
 
@@ -152,9 +163,16 @@ Metal owns the VM network state. Atlas reads the typed desired state and changes
 | Attach IP Address | Sets an attach intent and sends the address with `uplink` egress. |
 | Detach IP Address | Sends an empty address and sets a detach intent. |
 | Edit Network Throughput | Sends private and public limits in MiB/s. `0` removes a limit. |
+| Edit Firewall | Sends the enabled state and the inbound and outbound allow rules. |
 | Change Egress Mode | Sends `uplink`, `mesh`, or `none`. |
 
-Atlas applies the Metal change before it releases an address. A VM can hold one public IPv4 address. Public IPv4, egress, and throughput limits can also be set during creation.
+Atlas applies the Metal change before it releases an address. A VM can hold one public IPv4 address. Public IPv4, egress, throughput limits, and firewall rules can also be set during creation.
+
+The tenant API uses `PATCH /api/atlas/virtual-machines/{id}/network`. A request can change one firewall field. Atlas merges it with the current desired firewall and sends the complete network to Metal.
+
+Firewall rules are allow rules for public and mesh traffic. They support `any`, `tcp`, `udp`, and `icmp`. TCP and UDP rules can select one destination port or one inclusive range. Each rule needs one or more canonical IPv4 or IPv6 prefixes. One firewall can have at most 50 prefix entries.
+
+A disabled firewall permits all traffic and keeps its rules. An enabled firewall blocks unmatched new traffic. An empty direction blocks new traffic in that direction. Established and related connections continue.
 
 Egress controls internet reachability. It does not control mesh reachability.
 
@@ -172,7 +190,7 @@ Active connections can stop when the public IPv4 address or the egress mode chan
 
 `sleep_after_idle_seconds` lets Metal preserve and stop an idle VM after the configured duration. `0` disables automatic idle shutdown. Set it during creation or with the Edit Idle Shutdown action.
 
-`PUT /v1/vms/{name}/compute` replaces the complete compute object, so Atlas merges each change into the desired compute object. Only a vCPU or memory change needs a stopped VM. Atlas stores the timeout and does not implement idle or traffic behavior.
+`PUT /v1/vms/{name}/compute` replaces the complete compute object, so Atlas merges each change into the desired compute object. `cpu_millicores` is the exact CPU entitlement. `1000` millicores equals one CPU core. The valid range is 100 through 32000 millicores. The lower limit prevents impractical VM CPU quotas. The upper limit follows Firecracker's maximum of 32 guest vCPUs. A CPU or memory change needs a stopped VM. Atlas stores the timeout and does not implement idle or traffic behavior.
 
 ## Disk limits
 

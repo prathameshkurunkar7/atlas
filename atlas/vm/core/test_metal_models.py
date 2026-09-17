@@ -18,7 +18,7 @@ def complete_response() -> dict:
 			"restart_generation": 1,
 			"state": "running",
 			"compute": {
-				"virtual_cpu_count": 2,
+				"cpu_millicores": 2500,
 				"memory_mib": 2048,
 				"sleep_after_idle_seconds": 1800,
 			},
@@ -42,6 +42,11 @@ def complete_response() -> dict:
 				"wireguard_mesh_ipv6": "fdaa::1",
 				"private_network_throughput_mibps": 10,
 				"public_network_throughput_mibps": 20,
+				"firewall": {
+					"enabled": True,
+					"inbound": [{"protocol": "tcp", "ports": "22", "cidrs": ["203.0.113.0/24"]}],
+					"outbound": [{"protocol": "any", "cidrs": ["0.0.0.0/0", "::/0"]}],
+				},
 			},
 			"guest": {"hostname": "web", "ssh_keys": ["ssh-ed25519 AAAA"], "metadata": {"role": "web"}},
 		},
@@ -70,7 +75,7 @@ def new_virtual_machine_response() -> dict:
 			"restart_generation": 0,
 			"state": "running",
 			"compute": {
-				"virtual_cpu_count": 0,
+				"cpu_millicores": 0,
 				"memory_mib": 0,
 				"sleep_after_idle_seconds": 0,
 			},
@@ -88,6 +93,7 @@ def new_virtual_machine_response() -> dict:
 				"wireguard_mesh_ipv6": "",
 				"private_network_throughput_mibps": 0,
 				"public_network_throughput_mibps": 0,
+				"firewall": {"enabled": False, "inbound": [], "outbound": []},
 			},
 			"guest": {"hostname": "", "ssh_keys": [], "metadata": {}},
 		},
@@ -107,11 +113,13 @@ class TestMetalVirtualMachineParsing(UnitTestCase):
 		machine = MetalVirtualMachine.from_dict(complete_response())
 
 		self.assertEqual(machine.id, "VM-00001")
-		self.assertEqual(machine.desired.compute.virtual_cpu_count, 2)
+		self.assertEqual(machine.desired.compute.cpu_millicores, 2500)
 		self.assertEqual(machine.desired.compute.sleep_after_idle_seconds, 1800)
 		self.assertEqual(machine.desired.image.rootfs.sha256, "a" * 64)
 		self.assertEqual(machine.desired.guest.ssh_keys, ("ssh-ed25519 AAAA",))
 		self.assertEqual(machine.desired.guest.metadata, {"role": "web"})
+		self.assertTrue(machine.desired.network.firewall.enabled)
+		self.assertEqual(machine.desired.network.firewall.inbound[0].ports, "22")
 		self.assertEqual(machine.observed.network.mac, "06:00:ac:10:00:02")
 		self.assertEqual(machine.observed.error.message, "network failed")
 
@@ -120,7 +128,7 @@ class TestMetalVirtualMachineParsing(UnitTestCase):
 		machine = MetalVirtualMachine.from_dict(new_virtual_machine_response())
 
 		self.assertEqual(machine.desired.state, "running")
-		self.assertEqual(machine.desired.compute.virtual_cpu_count, 0)
+		self.assertEqual(machine.desired.compute.cpu_millicores, 0)
 		self.assertEqual(machine.desired.guest.ssh_keys, ())
 		self.assertEqual(machine.observed.state, "unknown")
 		self.assertIsNone(machine.observed.error)
@@ -185,7 +193,7 @@ class TestMetalContract(UnitTestCase):
 		self.assert_has_fields(
 			definitions,
 			"api.computeResponse",
-			{"virtual_cpu_count", "memory_mib", "sleep_after_idle_seconds"},
+			{"cpu_millicores", "memory_mib", "sleep_after_idle_seconds"},
 		)
 		self.assert_has_fields(
 			definitions,

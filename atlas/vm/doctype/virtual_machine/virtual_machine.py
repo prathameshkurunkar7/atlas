@@ -6,11 +6,13 @@ from typing import Any
 import frappe
 from frappe import _, request_cache
 from frappe.model.document import Document
+from frappe.model.naming import make_autoname
 from frappe.utils import add_to_date, cint, now_datetime
 
 from atlas.atlas.core.background_jobs import run_as_admin
 from atlas.atlas.core.exceptions import AtlasUserError
 from atlas.atlas.core.parsing import strict_bool
+from atlas.atlas.core.tags import validate_tags
 from atlas.atlas.doctype.ssh_task.ssh_task import delete_tasks_for_target
 from atlas.vm.core import reconciliation
 from atlas.vm.core.metal_models import MetalVirtualMachine
@@ -34,8 +36,13 @@ class VirtualMachine(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
+		from atlas.atlas.doctype.atlas_tag.atlas_tag import AtlasTag
+
 		active_migration: DF.Link | None
+		architecture: DF.Literal["amd64", "arm64"]
+		cpu_millicores: DF.Int
 		disk_mib: DF.Int
+		firewall_summary: DF.Code | None
 		is_draft: DF.Check
 		is_privileged: DF.Check
 		is_terminating: DF.Check
@@ -43,10 +50,14 @@ class VirtualMachine(Document):
 		metadata: DF.Code | None
 		server: DF.Link
 		sleep_after_idle_seconds: DF.Int
+		tags: DF.Table[AtlasTag]
 		tenant_id: DF.Int
-		vcpus: DF.Int
-		virtual_machine_image: DF.Link
+		virtual_machine_image: DF.Data
 	# end: auto-generated types
+
+	def autoname(self) -> None:
+		"""Assign a permanent virtual machine ID."""
+		self.name = make_autoname("vm-.#######", doc=self)
 
 	@request_cache
 	def get_metal_vm_info(self) -> MetalVirtualMachine | None:
@@ -70,6 +81,8 @@ class VirtualMachine(Document):
 		This runs on every save, because the flag is removable. Removing it drops
 		the address from the next whitelist and ends cross-tenant traffic.
 		"""
+		validate_tags(self)
+
 		if self.is_privileged and self.tenant_id != PRIVILEGED_TENANT_ID:
 			frappe.throw(_("A privileged Virtual Machine must use tenant {0}.").format(PRIVILEGED_TENANT_ID))
 
@@ -170,6 +183,11 @@ class VirtualMachine(Document):
 		return information.desired.network.public_network_throughput_mibps if information else 0
 
 	@property
+	def firewall_summary(self) -> str:
+		"""Return the empty initial value that the form replaces after its explicit firewall read."""
+		return ""
+
+	@property
 	def ssh_keys(self) -> str:
 		"""Return the authorized keys as one newline-separated block."""
 		information = self.get_metal_vm_info()
@@ -242,6 +260,7 @@ class VirtualMachine(Document):
 		image_type: str = "machine",
 		cache_image: bool = False,
 		memory_snapshot: bool = False,
+		tags: dict[str, str] | None = None,
 	) -> str:
 		"""Queue an image transfer from this VM. A System image needs tenant 0."""
 		self.check_permission("write")
@@ -277,6 +296,7 @@ class VirtualMachine(Document):
 			image_type=image_type,
 			cache_image=cache_image,
 			memory_snapshot=memory_snapshot,
+			tags=tags,
 		)
 
 	@frappe.whitelist(methods=["POST"])
@@ -345,6 +365,20 @@ class VirtualMachine(Document):
 			}
 		)
 
+	@frappe.whitelist(methods=["GET"])
+	def read_firewall(self) -> dict[str, Any]:
+		"""Return the complete desired firewall when the user opens the editor."""
+		self.check_permission("read")
+		information = self.get_metal_vm_info()
+		if not information:
+			return {"enabled": False, "inbound": [], "outbound": []}
+		return information.desired.network.firewall.as_dict()
+
+	@frappe.whitelist(methods=["POST"])
+	def update_firewall(self, firewall: dict[str, Any]) -> dict[str, Any]:
+		"""Change the firewall without a VM restart."""
+		return self.update_network({"firewall": firewall})
+
 	@frappe.whitelist(methods=["POST"])
 	def update_disk_limits(self, disk_throughput_mibps: int, disk_iops: int) -> dict[str, Any]:
 		"""Change the disk limits in MiB/s and IOPS without a VM restart. 0 removes a limit."""
@@ -379,9 +413,9 @@ class VirtualMachine(Document):
 		return self.update_disk({"size_mib": int(disk_mib)})
 
 	@frappe.whitelist(methods=["POST"])
-	def resize_compute(self, vcpus: int, memory_mib: int) -> dict[str, Any]:
+	def resize_compute(self, cpu_millicores: int, memory_mib: int) -> dict[str, Any]:
 		"""Ask Metal to change this VM CPU and memory. The VM must be stopped."""
-		return self.update_compute({"virtual_cpu_count": int(vcpus), "memory_mib": int(memory_mib)})
+		return self.update_compute({"cpu_millicores": int(cpu_millicores), "memory_mib": int(memory_mib)})
 
 	@frappe.whitelist(methods=["POST"])
 	def update_idle_shutdown(self, sleep_after_idle_seconds: int) -> dict[str, Any]:
@@ -413,7 +447,7 @@ class VirtualMachine(Document):
 		return VirtualMachineService(self).update_disk(changes)
 
 	def update_network(self, changes: dict[str, Any]) -> dict[str, Any]:
-		"""Apply selected egress and throughput changes."""
+		"""Apply selected network changes."""
 		self.check_permission("write")
 		self.ensure_not_migrating()
 		return VirtualMachineService(self).apply_network_changes(changes)

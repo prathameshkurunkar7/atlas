@@ -74,7 +74,7 @@ request_body=$(jq -n \
 	--arg hostname "$virtual_machine_id" --argjson idle_seconds "$idle_seconds" \
 	'{
 		compute: {
-			virtual_cpu_count: 1,
+			cpu_millicores: 1000,
 			memory_mib: 256,
 			sleep_after_idle_seconds: $idle_seconds
 		},
@@ -92,6 +92,7 @@ request_body=$(jq -n \
 			wireguard_mesh_ipv6: "fdaa::2",
 			private_network_throughput_mibps: 0,
 			public_network_throughput_mibps: 0,
+			firewall: {enabled: false, inbound: [], outbound: []},
 			egress: "uplink"
 		},
 		guest: {hostname: $hostname, ssh_keys: [$ssh_key], metadata: {}, user_data: ""}

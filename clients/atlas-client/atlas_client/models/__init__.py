@@ -10,11 +10,20 @@ from .create_virtual_machine_payload_egress import CreateVirtualMachinePayloadEg
 from .create_virtual_machine_payload_metadata import CreateVirtualMachinePayloadMetadata
 from .disk_update_payload import DiskUpdatePayload
 from .download_image_artifact import DownloadImageArtifact
+from .firewall_payload import FirewallPayload
+from .firewall_response import FirewallResponse
+from .firewall_rule_payload import FirewallRulePayload
+from .firewall_rule_payload_protocol import FirewallRulePayloadProtocol
+from .firewall_rule_response import FirewallRuleResponse
+from .firewall_rule_response_protocol import FirewallRuleResponseProtocol
+from .firewall_update_payload import FirewallUpdatePayload
 from .image_download_response import ImageDownloadResponse
 from .image_download_response_artifact import ImageDownloadResponseArtifact
 from .image_response import ImageResponse
+from .image_response_tags import ImageResponseTags
 from .ip_address_assignment_payload import IPAddressAssignmentPayload
 from .ip_address_response import IPAddressResponse
+from .ip_address_response_tags import IPAddressResponseTags
 from .json_web_key import JSONWebKey
 from .json_web_key_set_response import JSONWebKeySetResponse
 from .list_images_image_type_type_0 import ListImagesImageTypeType0
@@ -26,18 +35,21 @@ from .page_image_response import PageImageResponse
 from .page_ip_address_response import PageIPAddressResponse
 from .page_virtual_machine_list_response import PageVirtualMachineListResponse
 from .reserve_ip_address_payload import ReserveIPAddressPayload
-from .reserve_ip_address_payload_source import ReserveIPAddressPayloadSource
 from .snapshot_payload import SnapshotPayload
 from .snapshot_payload_image_type import SnapshotPayloadImageType
+from .snapshot_payload_tags import SnapshotPayloadTags
 from .ssh_keys_replacement_payload import SSHKeysReplacementPayload
 from .virtual_machine_compute import VirtualMachineCompute
 from .virtual_machine_detail_response import VirtualMachineDetailResponse
+from .virtual_machine_detail_response_tags import VirtualMachineDetailResponseTags
 from .virtual_machine_disk import VirtualMachineDisk
 from .virtual_machine_guest import VirtualMachineGuest
 from .virtual_machine_guest_metadata import VirtualMachineGuestMetadata
 from .virtual_machine_list_response import VirtualMachineListResponse
+from .virtual_machine_list_response_tags import VirtualMachineListResponseTags
 from .virtual_machine_network import VirtualMachineNetwork
 from .virtual_machine_response import VirtualMachineResponse
+from .virtual_machine_response_tags import VirtualMachineResponseTags
 
 __all__ = (
     "ComputeUpdatePayload",
@@ -50,11 +62,20 @@ __all__ = (
     "CreateVirtualMachinePayloadMetadata",
     "DiskUpdatePayload",
     "DownloadImageArtifact",
+    "FirewallPayload",
+    "FirewallResponse",
+    "FirewallRulePayload",
+    "FirewallRulePayloadProtocol",
+    "FirewallRuleResponse",
+    "FirewallRuleResponseProtocol",
+    "FirewallUpdatePayload",
     "ImageDownloadResponse",
     "ImageDownloadResponseArtifact",
     "ImageResponse",
+    "ImageResponseTags",
     "IPAddressAssignmentPayload",
     "IPAddressResponse",
+    "IPAddressResponseTags",
     "JSONWebKey",
     "JSONWebKeySetResponse",
     "ListImagesImageTypeType0",
@@ -66,16 +87,19 @@ __all__ = (
     "PageIPAddressResponse",
     "PageVirtualMachineListResponse",
     "ReserveIPAddressPayload",
-    "ReserveIPAddressPayloadSource",
     "SnapshotPayload",
     "SnapshotPayloadImageType",
+    "SnapshotPayloadTags",
     "SSHKeysReplacementPayload",
     "VirtualMachineCompute",
     "VirtualMachineDetailResponse",
+    "VirtualMachineDetailResponseTags",
     "VirtualMachineDisk",
     "VirtualMachineGuest",
     "VirtualMachineGuestMetadata",
     "VirtualMachineListResponse",
+    "VirtualMachineListResponseTags",
     "VirtualMachineNetwork",
     "VirtualMachineResponse",
+    "VirtualMachineResponseTags",
 )

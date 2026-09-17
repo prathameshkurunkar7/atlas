@@ -1,6 +1,5 @@
 {
  "actions": [],
- "autoname": "vm-.#####",
  "creation": "2026-09-03 03:25:50.873793",
  "doctype": "DocType",
  "engine": "InnoDB",
@@ -15,10 +14,11 @@
   "column_break_status",
   "server",
   "virtual_machine_image",
+  "architecture",
   "hostname",
   "error",
   "section_break_compute_and_storage",
-  "vcpus",
+  "cpu_millicores",
   "memory_mib",
   "sleep_after_idle_seconds",
   "column_break_compute",
@@ -34,8 +34,11 @@
   "mac",
   "public_network_throughput_mibps",
   "other_data_section",
+  "firewall_summary",
   "ssh_keys",
-  "metadata"
+  "metadata",
+  "section_break_tags",
+  "tags"
  ],
  "fields": [
   {
@@ -89,11 +92,10 @@
   },
   {
    "fieldname": "virtual_machine_image",
-   "fieldtype": "Link",
+   "fieldtype": "Data",
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Virtual Machine Image",
-   "options": "Virtual Machine Image",
    "read_only": 1,
    "reqd": 1,
    "set_only_once": 1
@@ -107,13 +109,15 @@
    "read_only": 1
   },
   {
-   "fieldname": "vcpus",
+   "description": "1000 millicores equals one CPU core. The valid range is 100 to 32000. Firecracker supports a maximum of 32 guest vCPUs.",
+   "fieldname": "cpu_millicores",
    "fieldtype": "Int",
    "in_list_view": 1,
-   "label": "vCPUs",
+   "label": "CPU (millicores)",
    "read_only": 1,
    "reqd": 1,
-   "set_only_once": 1
+   "set_only_once": 1,
+   "show_description_on_click": 1
   },
   {
    "fieldname": "column_break_compute",
@@ -238,6 +242,14 @@
    "read_only": 1
   },
   {
+   "fieldname": "firewall_summary",
+   "fieldtype": "Code",
+   "is_virtual": 1,
+   "label": "Firewall",
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
    "fieldname": "ssh_keys",
    "fieldtype": "Small Text",
    "is_virtual": 1,
@@ -264,6 +276,29 @@
   {
    "fieldname": "other_data_section",
    "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "architecture",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Architecture",
+   "options": "amd64\narm64",
+   "read_only": 1,
+   "reqd": 1,
+   "set_only_once": 1
+  },
+  {
+   "fieldname": "section_break_tags",
+   "fieldtype": "Section Break",
+   "label": "Tags"
+  },
+  {
+   "description": "Your own key and value labels for this virtual machine, such as env and prod. Use them to find it again.",
+   "fieldname": "tags",
+   "fieldtype": "Table",
+   "label": "Tags",
+   "options": "Atlas Tag",
+   "show_description_on_click": 1
   }
  ],
  "in_create": 1,
@@ -285,7 +320,7 @@
  "modified_by": "Administrator",
  "module": "VM",
  "name": "Virtual Machine",
- "naming_rule": "Expression",
+ "naming_rule": "By script",
  "owner": "Administrator",
  "permissions": [
   {

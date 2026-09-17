@@ -10,6 +10,8 @@ from ..types import UNSET, Unset
 
 from typing import cast
 
+if TYPE_CHECKING:
+  from ..models.ip_address_response_tags import IPAddressResponseTags
 
 
 
@@ -27,7 +29,9 @@ class IPAddressResponse:
             address (str):
             created_at (int):
             id (str):
+            reserved (bool):
             state (str):
+            tags (IPAddressResponseTags):
             tenant_id (int):
             virtual_machine_id (None | str):
      """
@@ -35,7 +39,9 @@ class IPAddressResponse:
     address: str
     created_at: int
     id: str
+    reserved: bool
     state: str
+    tags: IPAddressResponseTags
     tenant_id: int
     virtual_machine_id: None | str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -45,13 +51,18 @@ class IPAddressResponse:
 
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.ip_address_response_tags import IPAddressResponseTags # noqa: PLC0415
         address = self.address
 
         created_at = self.created_at
 
         id = self.id
 
+        reserved = self.reserved
+
         state = self.state
+
+        tags = self.tags.to_dict()
 
         tenant_id = self.tenant_id
 
@@ -65,7 +76,9 @@ class IPAddressResponse:
             "address": address,
             "created_at": created_at,
             "id": id,
+            "reserved": reserved,
             "state": state,
+            "tags": tags,
             "tenant_id": tenant_id,
             "virtual_machine_id": virtual_machine_id,
         })
@@ -76,6 +89,7 @@ class IPAddressResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.ip_address_response_tags import IPAddressResponseTags # noqa: PLC0415
         d = dict(src_dict)
         address = d.pop("address")
 
@@ -83,7 +97,14 @@ class IPAddressResponse:
 
         id = d.pop("id")
 
+        reserved = d.pop("reserved")
+
         state = d.pop("state")
+
+        tags = IPAddressResponseTags.from_dict(d.pop("tags"))
+
+
+
 
         tenant_id = d.pop("tenant_id")
 
@@ -99,7 +120,9 @@ class IPAddressResponse:
             address=address,
             created_at=created_at,
             id=id,
+            reserved=reserved,
             state=state,
+            tags=tags,
             tenant_id=tenant_id,
             virtual_machine_id=virtual_machine_id,
         )

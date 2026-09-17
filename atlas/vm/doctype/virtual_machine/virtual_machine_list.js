@@ -1,3 +1,58 @@
+function firewallRuleFields() {
+	return [
+		{
+			fieldname: "direction",
+			fieldtype: "Select",
+			label: __("Direction"),
+			options: "inbound\noutbound",
+			reqd: 1,
+			in_list_view: 1,
+		},
+		{
+			fieldname: "protocol",
+			fieldtype: "Select",
+			label: __("Protocol"),
+			options: "any\ntcp\nudp\nicmp",
+			reqd: 1,
+			in_list_view: 1,
+		},
+		{
+			fieldname: "ports",
+			fieldtype: "Data",
+			label: __("Ports"),
+			description: __("Use one port or one range, such as 22 or 8000-9000."),
+			in_list_view: 1,
+		},
+		{
+			fieldname: "cidrs",
+			fieldtype: "Data",
+			label: __("CIDRs"),
+			reqd: 1,
+			description: __("Separate IPv4 and IPv6 prefixes with commas or spaces."),
+			in_list_view: 1,
+		},
+	];
+}
+
+function firewallValue(enabled, rows) {
+	const firewall = { enabled: Boolean(enabled), inbound: [], outbound: [] };
+	(rows || []).forEach((row) => {
+		if (!row.direction && !row.protocol && !row.cidrs) return;
+		if (!["inbound", "outbound"].includes(row.direction)) {
+			frappe.throw(__("Each firewall rule needs a direction."));
+		}
+		firewall[row.direction].push({
+			protocol: row.protocol,
+			ports: (row.ports || "").trim(),
+			cidrs: (row.cidrs || "")
+				.split(/[\s,]+/)
+				.map((cidr) => cidr.trim())
+				.filter(Boolean),
+		});
+	});
+	return firewall;
+}
+
 function showCreateVirtualMachineDialog() {
 	const dialog = new frappe.ui.Dialog({
 		title: __("Create Virtual Machine"),
@@ -12,7 +67,19 @@ function showCreateVirtualMachineDialog() {
 				reqd: 1,
 				filters: { enabled: 1, status: "Available" },
 			},
-			{ fieldname: "vcpus", fieldtype: "Int", label: __("vCPUs"), reqd: 1, default: 1 },
+			{
+				fieldname: "cpu_millicores",
+				fieldtype: "Int",
+				label: __("CPU (millicores)"),
+				reqd: 1,
+				min: 100,
+				max: 32000,
+				default: 1000,
+				description: __(
+					"The valid range is 100 to 32000 millicores. 1000 millicores equals one CPU core."
+				),
+				show_description_on_click: 1,
+			},
 			{
 				fieldname: "disk_throughput_mibps",
 				fieldtype: "Int",
@@ -42,21 +109,6 @@ function showCreateVirtualMachineDialog() {
 				default: 0,
 				description: __("0 does not apply a limit."),
 			},
-			{ fieldtype: "Section Break", label: __("Guest") },
-			{ fieldname: "hostname", fieldtype: "Data", label: __("Hostname") },
-			{
-				fieldname: "ssh_keys",
-				fieldtype: "Code",
-				label: __("SSH Keys"),
-				description: __("One public key per line."),
-			},
-			{ fieldtype: "Column Break" },
-			{
-				fieldname: "user_data",
-				fieldtype: "Code",
-				label: __("User Data"),
-				options: "YAML",
-			},
 			{ fieldtype: "Section Break", label: __("Network") },
 			{
 				fieldname: "egress",
@@ -71,8 +123,8 @@ function showCreateVirtualMachineDialog() {
 				fieldname: "tenant_id",
 				fieldtype: "Int",
 				label: __("Tenant ID"),
-				description: __("VMs in the same tenant can connect through the mesh."),
-				reqd: 1,
+				description: __("Same tenant connects through the mesh. 0 is infrastructure."),
+				default: 0,
 			},
 			{
 				fieldname: "is_privileged",
@@ -80,14 +132,6 @@ function showCreateVirtualMachineDialog() {
 				label: __("Privileged"),
 				default: 0,
 				description: __("Reaches every tenant. Needs tenant 0."),
-			},
-			{
-				fieldname: "server_ip_address",
-				fieldtype: "Link",
-				label: __("Public IPv4"),
-				options: "Metal Server IP Address",
-				depends_on: 'eval:doc.egress == "uplink"',
-				filters: { status: "Allocated" },
 			},
 			{ fieldtype: "Column Break" },
 			{
@@ -104,9 +148,51 @@ function showCreateVirtualMachineDialog() {
 				default: 0,
 				description: __("0 does not apply a limit."),
 			},
+			{
+				fieldname: "server_ip_address",
+				fieldtype: "Link",
+				label: __("Public IPv4"),
+				options: "Metal Server IP Address",
+				depends_on: 'eval:doc.egress == "uplink"',
+				filters: { status: "Allocated" },
+			},
+			{ fieldtype: "Section Break", label: __("Firewall") },
+			{
+				fieldname: "firewall_enabled",
+				fieldtype: "Check",
+				label: __("Enabled"),
+				default: 0,
+				description: __("When enabled, unmatched new traffic is blocked."),
+			},
+			{
+				fieldname: "firewall_rules",
+				fieldtype: "Table",
+				label: __("Allow Rules"),
+				in_place_edit: true,
+				data: [],
+				fields: firewallRuleFields(),
+			},
+			{ fieldtype: "Section Break", label: __("Guest") },
+			{ fieldname: "hostname", fieldtype: "Data", label: __("Hostname") },
+			{
+				fieldname: "ssh_keys",
+				fieldtype: "Code",
+				label: __("SSH Keys"),
+				description: __("One public key per line."),
+			},
+			{ fieldtype: "Column Break" },
+			{
+				fieldname: "user_data",
+				fieldtype: "Code",
+				label: __("User Data"),
+				options: "YAML",
+			},
 		],
 		primary_action_label: __("Create"),
 		primary_action(values) {
+			values.firewall = firewallValue(values.firewall_enabled, values.firewall_rules);
+			delete values.firewall_enabled;
+			delete values.firewall_rules;
 			frappe.call({
 				method: "atlas.vm.doctype.virtual_machine.virtual_machine.create",
 				args: { request: values },

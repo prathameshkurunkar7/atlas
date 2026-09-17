@@ -9,7 +9,7 @@ import (
 
 // Specification contains the persistent configuration for one VM.
 type Specification struct {
-	VirtualCPUCount       int                  `json:"virtual_cpu_count"`
+	CPUMillicores         int                  `json:"cpu_millicores"`
 	MemoryMiB             int                  `json:"memory_mib"`
 	SleepAfterIdleSeconds int                  `json:"sleep_after_idle_seconds,omitempty"`
 	DiskMiB               int                  `json:"disk_mib"`
@@ -24,7 +24,7 @@ type Specification struct {
 
 // Compute is the requested compute configuration of one VM.
 type Compute struct {
-	VirtualCPUCount       int
+	CPUMillicores         int
 	MemoryMiB             int
 	SleepAfterIdleSeconds int
 }
@@ -57,17 +57,28 @@ type Disk struct {
 
 // NetworkConfiguration contains the requested VM network configuration.
 type NetworkConfiguration struct {
-	PublicIPv4                    string `json:"public_ipv4"`
-	WireGuardMeshIPv6             string `json:"wireguard_mesh_ipv6"`
-	PrivateNetworkThroughputMiBps int    `json:"private_network_throughput_mibps"`
-	PublicNetworkThroughputMiBps  int    `json:"public_network_throughput_mibps"`
-	Egress                        Egress `json:"egress"`
+	PublicIPv4                    string                `json:"public_ipv4"`
+	WireGuardMeshIPv6             string                `json:"wireguard_mesh_ipv6"`
+	PrivateNetworkThroughputMiBps int                   `json:"private_network_throughput_mibps"`
+	PublicNetworkThroughputMiBps  int                   `json:"public_network_throughput_mibps"`
+	Egress                        Egress                `json:"egress"`
+	Firewall                      FirewallConfiguration `json:"firewall"`
+}
+
+// Equal reports whether two network configurations contain the same desired values.
+func (configuration NetworkConfiguration) Equal(other NetworkConfiguration) bool {
+	return configuration.PublicIPv4 == other.PublicIPv4 &&
+		configuration.WireGuardMeshIPv6 == other.WireGuardMeshIPv6 &&
+		configuration.PrivateNetworkThroughputMiBps == other.PrivateNetworkThroughputMiBps &&
+		configuration.PublicNetworkThroughputMiBps == other.PublicNetworkThroughputMiBps &&
+		configuration.Egress == other.Egress &&
+		configuration.Firewall.Equal(other.Firewall)
 }
 
 // SameReservation reports whether two specifications reserve the same VM. It
 // ignores signed image URLs, which can rotate without changing the reservation.
 func (specification Specification) SameReservation(other Specification) bool {
-	return specification.VirtualCPUCount == other.VirtualCPUCount &&
+	return specification.CPUMillicores == other.CPUMillicores &&
 		specification.MemoryMiB == other.MemoryMiB &&
 		specification.SleepAfterIdleSeconds == other.SleepAfterIdleSeconds &&
 		specification.DiskMiB == other.DiskMiB &&
@@ -76,11 +87,20 @@ func (specification Specification) SameReservation(other Specification) bool {
 		strings.EqualFold(specification.Image.RootfsSHA256, other.Image.RootfsSHA256) &&
 		strings.EqualFold(specification.Image.KernelSHA256, other.Image.KernelSHA256) &&
 		specification.Image.Architecture == other.Image.Architecture &&
-		specification.Network == other.Network &&
+		specification.Network.Equal(other.Network) &&
 		slices.Equal(specification.SSHKeys, other.SSHKeys) &&
 		specification.Hostname == other.Hostname &&
 		specification.UserData == other.UserData &&
 		maps.Equal(specification.Metadata, other.Metadata)
+}
+
+// VirtualCPUCount returns the integer CPU count that Firecracker exposes to the guest.
+func (specification Specification) VirtualCPUCount() int {
+	count := specification.CPUMillicores / 1000
+	if specification.CPUMillicores%1000 != 0 {
+		count++
+	}
+	return count
 }
 
 // RefreshImageSource replaces image URLs and caching intent so a retry can use
@@ -172,7 +192,7 @@ type Information struct {
 	State                         State
 	DesiredState                  State
 	Error                         *PublicOperationError
-	VirtualCPUCount               int
+	CPUMillicores                 int
 	MemoryMiB                     int
 	DiskMiB                       int
 	DiskUsedMiB                   int
@@ -189,6 +209,7 @@ type Information struct {
 	PrivateNetworkThroughputMiBps int
 	PublicNetworkThroughputMiBps  int
 	Egress                        Egress
+	Firewall                      FirewallConfiguration
 	DesiredGeneration             uint64
 	DesiredRestartGeneration      uint64
 	ObservedGeneration            uint64

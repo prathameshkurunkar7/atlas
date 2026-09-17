@@ -6,6 +6,8 @@ import (
 	"net/netip"
 	"net/url"
 	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/frappe/atlas/metal/internal/vm"
@@ -16,11 +18,14 @@ const (
 	// maximumResourceIDLength keeps an ID usable as a path, ZFS dataset, and
 	// systemd unit instance name.
 	maximumResourceIDLength = 64
+	minimumCPUMillicores    = 100
+	maximumCPUMillicores    = 32_000
 
 	// maximumMemoryMiB prevents unit memory overflow. The unit limit is twice the
 	// guest size plus fixed overhead.
 	maximumMemoryMiB             = (math.MaxInt - 128) / 2
 	maximumSleepAfterIdleSeconds = int64(math.MaxInt64) / int64(time.Second)
+	maximumFirewallPrefixes      = 50
 )
 
 // Patterns that keep caller-supplied values usable as host paths and names.
@@ -28,6 +33,7 @@ var (
 	imageReferencePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]*$`)
 	resourceIDPattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 	sha256DigestPattern   = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
+	firewallPortsPattern  = regexp.MustCompile(`^[0-9]+(?:-[0-9]+)?$`)
 
 	// wireGuardMeshPrefix is the only block a VM mesh address may fall in.
 	wireGuardMeshPrefix = netip.MustParsePrefix("fdaa::/16")
@@ -45,7 +51,7 @@ type createRequest struct {
 
 // computeRequest is the complete compute configuration.
 type computeRequest struct {
-	VirtualCPUCount       int `json:"virtual_cpu_count" minimum:"1"`
+	CPUMillicores         int `json:"cpu_millicores" minimum:"100" maximum:"32000"`
 	MemoryMiB             int `json:"memory_mib" minimum:"1"`
 	SleepAfterIdleSeconds int `json:"sleep_after_idle_seconds" minimum:"0"`
 }
@@ -99,11 +105,26 @@ func (request diskRequest) specification() vm.Disk {
 
 // networkRequest is the complete desired VM network.
 type networkRequest struct {
-	PublicIPv4                    string `json:"public_ipv4"`
-	WireGuardMeshIPv6             string `json:"wireguard_mesh_ipv6"`
-	PrivateNetworkThroughputMiBps int    `json:"private_network_throughput_mibps"`
-	PublicNetworkThroughputMiBps  int    `json:"public_network_throughput_mibps"`
-	Egress                        string `json:"egress"`
+	PublicIPv4                    string           `json:"public_ipv4"`
+	WireGuardMeshIPv6             string           `json:"wireguard_mesh_ipv6"`
+	PrivateNetworkThroughputMiBps int              `json:"private_network_throughput_mibps"`
+	PublicNetworkThroughputMiBps  int              `json:"public_network_throughput_mibps"`
+	Egress                        string           `json:"egress"`
+	Firewall                      *firewallRequest `json:"firewall"`
+}
+
+// firewallRequest is the complete desired firewall configuration.
+type firewallRequest struct {
+	Enabled  bool                  `json:"enabled"`
+	Inbound  []firewallRuleRequest `json:"inbound"`
+	Outbound []firewallRuleRequest `json:"outbound"`
+}
+
+// firewallRuleRequest permits traffic from or to a set of IP prefixes.
+type firewallRuleRequest struct {
+	Protocol string   `json:"protocol" enums:"any,tcp,udp,icmp"`
+	Ports    string   `json:"ports,omitempty"`
+	CIDRs    []string `json:"cidrs"`
 }
 
 // guestRequest carries the values published to the guest through MMDS.
@@ -143,7 +164,7 @@ func (request createRequest) validate() error {
 // specification converts the request into the domain VM specification.
 func (request createRequest) specification() vm.Specification {
 	return vm.Specification{
-		VirtualCPUCount:       request.Compute.VirtualCPUCount,
+		CPUMillicores:         request.Compute.CPUMillicores,
 		MemoryMiB:             request.Compute.MemoryMiB,
 		SleepAfterIdleSeconds: request.Compute.SleepAfterIdleSeconds,
 		DiskMiB:               request.Disk.SizeMiB,
@@ -159,8 +180,14 @@ func (request createRequest) specification() vm.Specification {
 
 // validate rejects a compute shape the host cannot represent.
 func (request computeRequest) validate() error {
-	if request.VirtualCPUCount <= 0 || request.MemoryMiB <= 0 {
-		return fmt.Errorf("compute values must be positive")
+	if request.CPUMillicores < minimumCPUMillicores {
+		return fmt.Errorf("compute.cpu_millicores must be at least %d", minimumCPUMillicores)
+	}
+	if request.CPUMillicores > maximumCPUMillicores {
+		return fmt.Errorf("compute.cpu_millicores must not exceed %d", maximumCPUMillicores)
+	}
+	if request.MemoryMiB <= 0 {
+		return fmt.Errorf("compute.memory_mib must be positive")
 	}
 	if request.MemoryMiB > maximumMemoryMiB {
 		return fmt.Errorf("compute.memory_mib is too large")
@@ -205,8 +232,12 @@ func (request imageRequest) validate() error {
 	}
 	if request.MemorySnapshot {
 		configuration := request.MemorySnapshotConfiguration
-		if configuration == nil || configuration.VirtualCPUCount <= 0 || configuration.MemoryMiB <= 0 || configuration.DiskMiB <= 0 {
-			return fmt.Errorf("image.memory_snapshot_configuration must contain positive values")
+		if configuration == nil ||
+			configuration.VirtualCPUCount <= 0 ||
+			configuration.VirtualCPUCount > maximumCPUMillicores/1000 ||
+			configuration.MemoryMiB <= 0 ||
+			configuration.DiskMiB <= 0 {
+			return fmt.Errorf("image.memory_snapshot_configuration has invalid values")
 		}
 	}
 
@@ -240,6 +271,12 @@ func (request networkRequest) validate() error {
 	if !egress.IsValid() {
 		return fmt.Errorf("network.egress must be %s, %s, or %s", vm.EgressUplink, vm.EgressMesh, vm.EgressNone)
 	}
+	if request.Firewall == nil {
+		return fmt.Errorf("network.firewall is required")
+	}
+	if err := request.Firewall.validate(); err != nil {
+		return err
+	}
 	if request.PublicIPv4 == "" {
 		return nil
 	}
@@ -262,7 +299,102 @@ func (request networkRequest) specification() vm.NetworkConfiguration {
 		PrivateNetworkThroughputMiBps: request.PrivateNetworkThroughputMiBps,
 		PublicNetworkThroughputMiBps:  request.PublicNetworkThroughputMiBps,
 		Egress:                        vm.Egress(request.Egress),
+		Firewall:                      request.Firewall.specification(),
 	}
+}
+
+// validate rejects firewall values that cannot be represented by iptables.
+func (request firewallRequest) validate() error {
+	inboundPrefixes, err := validateFirewallRules("inbound", request.Inbound)
+	if err != nil {
+		return err
+	}
+	outboundPrefixes, err := validateFirewallRules("outbound", request.Outbound)
+	if err != nil {
+		return err
+	}
+	prefixes := inboundPrefixes + outboundPrefixes
+	if prefixes > maximumFirewallPrefixes {
+		return fmt.Errorf("network.firewall must not exceed %d prefix entries", maximumFirewallPrefixes)
+	}
+	return nil
+}
+
+func validateFirewallRules(direction string, rules []firewallRuleRequest) (int, error) {
+	prefixes := 0
+	for index, rule := range rules {
+		if err := rule.validate(); err != nil {
+			return 0, fmt.Errorf("network.firewall.%s[%d]: %w", direction, index, err)
+		}
+		prefixes += len(rule.CIDRs)
+	}
+	return prefixes, nil
+}
+
+func (request firewallRuleRequest) validate() error {
+	protocol := vm.FirewallProtocol(request.Protocol)
+	if !protocol.IsValid() {
+		return fmt.Errorf("protocol must be any, tcp, udp, or icmp")
+	}
+	if err := validateFirewallPorts(protocol, request.Ports); err != nil {
+		return err
+	}
+	if len(request.CIDRs) == 0 {
+		return fmt.Errorf("cidrs must contain at least one prefix")
+	}
+	for _, value := range request.CIDRs {
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil || prefix != prefix.Masked() {
+			return fmt.Errorf("cidr %q must be a canonical IPv4 or IPv6 prefix", value)
+		}
+	}
+	return nil
+}
+
+func validateFirewallPorts(protocol vm.FirewallProtocol, ports string) error {
+	if ports == "" {
+		return nil
+	}
+	if protocol != vm.FirewallProtocolTCP && protocol != vm.FirewallProtocolUDP {
+		return fmt.Errorf("ports are valid only for tcp or udp")
+	}
+	if !firewallPortsPattern.MatchString(ports) {
+		return fmt.Errorf("ports must be one port or one inclusive range")
+	}
+
+	startValue, endValue, hasRange := strings.Cut(ports, "-")
+	start, _ := strconv.Atoi(startValue)
+	end := start
+	if hasRange {
+		end, _ = strconv.Atoi(endValue)
+	}
+	if strconv.Itoa(start) != startValue || (hasRange && strconv.Itoa(end) != endValue) {
+		return fmt.Errorf("ports must not contain leading zeros")
+	}
+	if start < 1 || end > 65535 || start > end {
+		return fmt.Errorf("ports must be between 1 and 65535 in ascending order")
+	}
+	return nil
+}
+
+func (request firewallRequest) specification() vm.FirewallConfiguration {
+	return vm.FirewallConfiguration{
+		Enabled:  request.Enabled,
+		Inbound:  firewallRuleSpecifications(request.Inbound),
+		Outbound: firewallRuleSpecifications(request.Outbound),
+	}
+}
+
+func firewallRuleSpecifications(requests []firewallRuleRequest) []vm.FirewallRule {
+	rules := make([]vm.FirewallRule, len(requests))
+	for index, request := range requests {
+		rules[index] = vm.FirewallRule{
+			Protocol: vm.FirewallProtocol(request.Protocol),
+			Ports:    request.Ports,
+			CIDRs:    append([]string(nil), request.CIDRs...),
+		}
+	}
+	return rules
 }
 
 // state returns the requested power state, or an error for any other value.

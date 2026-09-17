@@ -11,7 +11,13 @@ from atlas.atlas.core.mesh_address import get_virtual_machine_mesh_address
 from atlas.metal_server.core.ip_address_service import UNOWNED_TENANT_ID
 from atlas.vm.core.metal_client import MetalClient, MetalClientError
 from atlas.vm.core.metal_models import MetalVirtualMachine
-from atlas.vm.core.models import EGRESS_MODES, VirtualMachineCreateRequest
+from atlas.vm.core.models import (
+	EGRESS_MODES,
+	MAXIMUM_CPU_MILLICORES,
+	MINIMUM_CPU_MILLICORES,
+	FirewallConfiguration,
+	VirtualMachineCreateRequest,
+)
 from atlas.vm.core.placement import PlacementService
 
 if TYPE_CHECKING:
@@ -64,8 +70,8 @@ class VirtualMachineService:
 
 		image = cls.get_image(request.virtual_machine_image, request.tenant_id)
 		image.validate_compatibility(request.disk_mib)
-		server = PlacementService().select_server(request, image.platform)
-		virtual_machine = cls.insert_draft(request, cast(str, image.name), cast(str, server.name))
+		server = PlacementService().select_server(request, image.architecture)
+		virtual_machine = cls.insert_draft(request, image, cast(str, server.name))
 		service = cls(virtual_machine)
 		server_ip_address = (
 			service.assign_ip_address(request.server_ip_address) if request.server_ip_address else None
@@ -101,16 +107,21 @@ class VirtualMachineService:
 
 	@staticmethod
 	def insert_draft(
-		request: VirtualMachineCreateRequest, image_name: str, server_name: str
+		request: VirtualMachineCreateRequest, image: VirtualMachineImage, server_name: str
 	) -> VirtualMachine:
-		"""Insert one draft that reserves capacity before a Metal request."""
+		"""Insert one draft that reserves capacity before a Metal request.
+
+		The draft copies the image architecture, so later placement never reads the
+		image again and the image stays deletable.
+		"""
 		virtual_machine = frappe.get_doc(
 			{
 				"doctype": "Virtual Machine",
 				"is_draft": 1,
 				"server": server_name,
-				"virtual_machine_image": image_name,
-				"vcpus": request.virtual_cpu_count,
+				"virtual_machine_image": image.name,
+				"architecture": image.architecture,
+				"cpu_millicores": request.cpu_millicores,
 				"memory_mib": request.memory_mib,
 				"disk_mib": request.disk_mib,
 				"tenant_id": request.tenant_id,
@@ -130,7 +141,7 @@ class VirtualMachineService:
 		"""Return the complete Metal create request."""
 		return {
 			"compute": {
-				"virtual_cpu_count": request.virtual_cpu_count,
+				"cpu_millicores": request.cpu_millicores,
 				"memory_mib": request.memory_mib,
 				"sleep_after_idle_seconds": request.sleep_after_idle_seconds,
 			},
@@ -146,6 +157,7 @@ class VirtualMachineService:
 				"private_network_throughput_mibps": request.private_network_throughput_mibps,
 				"public_network_throughput_mibps": request.public_network_throughput_mibps,
 				"egress": request.egress,
+				"firewall": request.firewall.as_dict(),
 			},
 			"guest": {
 				"hostname": request.hostname,
@@ -242,16 +254,29 @@ class VirtualMachineService:
 
 	def update_compute(self, changes: dict[str, Any]) -> dict[str, Any]:
 		"""Apply selected compute changes."""
+		cpu_millicores = changes.get("cpu_millicores")
+		if cpu_millicores is not None and (
+			not isinstance(cpu_millicores, int)
+			or isinstance(cpu_millicores, bool)
+			or not MINIMUM_CPU_MILLICORES <= cpu_millicores <= MAXIMUM_CPU_MILLICORES
+		):
+			frappe.throw(
+				_("CPU must be between {0} and {1} millicores.").format(
+					MINIMUM_CPU_MILLICORES, MAXIMUM_CPU_MILLICORES
+				),
+				exc=AtlasUserError,
+			)
+
 		information = self.require_information()
 		current_compute = information.desired.compute
 		request = {
-			"virtual_cpu_count": current_compute.virtual_cpu_count,
+			"cpu_millicores": current_compute.cpu_millicores,
 			"memory_mib": current_compute.memory_mib,
 			"sleep_after_idle_seconds": self.virtual_machine.sleep_after_idle_seconds,
 			**changes,
 		}
 		is_shape_changed = (
-			request["virtual_cpu_count"] != current_compute.virtual_cpu_count
+			request["cpu_millicores"] != current_compute.cpu_millicores
 			or request["memory_mib"] != current_compute.memory_mib
 		)
 		if is_shape_changed and information.observed.state != "stopped":
@@ -262,7 +287,7 @@ class VirtualMachineService:
 		result = self.set_compute(request)
 		if is_shape_changed:
 			self.virtual_machine.db_set(
-				{"vcpus": request["virtual_cpu_count"], "memory_mib": request["memory_mib"]}
+				{"cpu_millicores": request["cpu_millicores"], "memory_mib": request["memory_mib"]}
 			)
 		if request["sleep_after_idle_seconds"] != self.virtual_machine.sleep_after_idle_seconds:
 			self.virtual_machine.db_set("sleep_after_idle_seconds", request["sleep_after_idle_seconds"])
@@ -299,6 +324,17 @@ class VirtualMachineService:
 	def update_network(self, changes: dict[str, Any]) -> dict[str, Any]:
 		"""Replace the complete network after applying selected changes."""
 		current_network = self.require_information().desired.network
+		firewall = {
+			"enabled": current_network.firewall.enabled,
+			"inbound": [rule.as_dict() for rule in current_network.firewall.inbound],
+			"outbound": [rule.as_dict() for rule in current_network.firewall.outbound],
+		}
+		if "firewall" in changes:
+			firewall_change = changes["firewall"]
+			if not isinstance(firewall_change, dict):
+				raise ValueError("Firewall change must be an object.")
+			firewall = {**firewall, **firewall_change}
+			firewall = FirewallConfiguration.from_value(firewall).as_dict()
 		request = {
 			"egress": current_network.egress,
 			"public_ipv4": current_network.public_ipv4,
@@ -306,6 +342,7 @@ class VirtualMachineService:
 			"private_network_throughput_mibps": current_network.private_network_throughput_mibps,
 			"public_network_throughput_mibps": current_network.public_network_throughput_mibps,
 			**changes,
+			"firewall": firewall,
 		}
 		information = self.perform_metal_operation(
 			lambda metal_client: metal_client.set_virtual_machine_network(
@@ -326,7 +363,11 @@ class VirtualMachineService:
 				exc=AtlasUserError,
 			)
 
-		return self.update_network(changes)
+		try:
+			return self.update_network(changes)
+		except ValueError as error:
+			frappe.throw(_(str(error)), exc=AtlasUserError)
+			raise AssertionError from error
 
 	def attach_ip_address(self, server_ip_address: str) -> dict[str, Any]:
 		"""Set the address intent before the Metal network request."""
@@ -340,7 +381,7 @@ class VirtualMachineService:
 		return information
 
 	def assign_ip_address(self, server_ip_address: str) -> MetalServerIPAddress:
-		"""Set an attach intent for one reserved public address."""
+		"""Set an attach intent; pool addresses stay unreserved."""
 		address = cast(
 			"MetalServerIPAddress",
 			frappe.get_doc("Metal Server IP Address", server_ip_address, for_update=True),
