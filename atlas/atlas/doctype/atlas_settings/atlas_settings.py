@@ -4,12 +4,13 @@
 from __future__ import annotations
 
 from functools import cached_property
+from math import isfinite
 from typing import TYPE_CHECKING
 
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import add_days, convert_utc_to_system_timezone, get_datetime, now_datetime
+from frappe.utils import add_days, convert_utc_to_system_timezone, flt, get_datetime, now_datetime
 
 from atlas.service.core.proxy.configuration import push_configuration_to_active_proxies
 
@@ -49,6 +50,18 @@ class AtlasSettings(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
+		aws_access_key_id: DF.Data | None
+		aws_availability_zone: DF.Data | None
+		aws_key_pair_name: DF.Data | None
+		aws_multicast_domain_id: DF.Data | None
+		aws_region: DF.Data | None
+		aws_secret_access_key: DF.Password | None
+		aws_security_group_id: DF.Data | None
+		aws_storage_pool_device: DF.Data | None
+		aws_subnet_id: DF.Data | None
+		aws_transit_gateway_attachment_id: DF.Data | None
+		aws_transit_gateway_id: DF.Data | None
+		aws_vpc_id: DF.Data | None
 		central_jwks: DF.JSON | None
 		central_jwks_url: DF.Data | None
 		dns_provider: DF.Literal["Route53"]
@@ -65,12 +78,14 @@ class AtlasSettings(Document):
 		letsencrypt_email: DF.Data
 		metald_binary_x86_64_file: DF.Link | None
 		metald_source_hash: DF.Data | None
+		new_host_type: DF.Link | None
 		object_storage_access_key_id: DF.Data | None
 		object_storage_bucket: DF.Data | None
 		object_storage_endpoint_url: DF.Data | None
 		object_storage_region: DF.Data | None
 		object_storage_secret_access_key: DF.Password | None
 		object_storage_signed_url_expiry: DF.Int
+		placement_strategy: DF.Autocomplete
 		previous_proxy_cluster_password: DF.Password | None
 		private_network_cidr: DF.Data
 		private_network_mtu: DF.Int
@@ -101,7 +116,8 @@ class AtlasSettings(Document):
 			"pl-waw-2",
 			"pl-waw-3",
 		]
-		server_provider: DF.Literal["Scaleway"]
+		server_provider: DF.Literal["Scaleway", "AWS"]
+		sleepy_vm_overcommit_factor: DF.Float
 		wg_mesh_binary_x86_64_file: DF.Link | None
 		wg_mesh_source_hash: DF.Data | None
 		wildcard_domain: DF.Data
@@ -187,7 +203,14 @@ class AtlasSettings(Document):
 		)
 
 	def validate(self) -> None:
-		"""Reject settings that would leave Atlas unable to reach a provider."""
+		"""Reject invalid site settings."""
+		from atlas.vm.core.placement.strategies import STRATEGIES
+
+		if self.placement_strategy not in STRATEGIES:
+			frappe.throw(_("Unknown placement strategy: {0}.").format(self.placement_strategy))
+
+		self._validate_sleepy_vm_overcommit_factor()
+
 		if not self.is_new() and self.has_value_changed("region_id"):
 			if frappe.db.exists("Virtual Machine") or frappe.db.exists(
 				"Proxy Server", {"status": ["!=", "Archived"]}
@@ -216,6 +239,21 @@ class AtlasSettings(Document):
 		self.region_name = self.region_name.strip().lower()
 
 		self.validate_wildcard_certificate()
+
+	def _validate_sleepy_vm_overcommit_factor(self) -> None:
+		factor = flt(self.sleepy_vm_overcommit_factor)
+		if not isfinite(factor) or factor < 1.0:
+			frappe.throw(_("Sleepy VM overcommit factor must be a finite number of at least 1."))
+
+		self.sleepy_vm_overcommit_factor = factor
+
+	@frappe.whitelist()
+	def available_placement_strategies(self) -> list[str]:
+		"""Return the names that the Placement tab can select."""
+		from atlas.vm.core.placement.strategies import STRATEGIES
+
+		frappe.only_for("System Manager")
+		return list(STRATEGIES)
 
 	def on_update(self) -> None:
 		"""Skip provider checks when the empty settings document is created."""
@@ -437,3 +475,9 @@ def renew_expiring_wildcard_certificate() -> None:
 def rotate_proxy_cluster_password() -> None:
 	"""Rotate the regional proxy password on schedule."""
 	frappe.get_single("Atlas Settings")._rotate_proxy_cluster_password()
+
+
+def migrate_placement_strategy() -> None:
+	"""Replace the removed strategy on sites that stored it before the new default."""
+	if frappe.db.get_single_value("Atlas Settings", "placement_strategy") == "Default":
+		frappe.db.set_single_value("Atlas Settings", "placement_strategy", "balanced")

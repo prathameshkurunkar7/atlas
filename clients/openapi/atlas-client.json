@@ -1,6 +1,66 @@
 {
   "components": {
     "schemas": {
+      "ApiErrorField": {
+        "description": "One field named in an Atlas API error.",
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "message"
+        ],
+        "title": "ApiErrorField",
+        "type": "object"
+      },
+      "CapacityPendingError": {
+        "description": "The error returned while Atlas starts host capacity.",
+        "properties": {
+          "code": {
+            "const": "capacity_pending",
+            "title": "Code",
+            "type": "string"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/ApiErrorField"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "fields"
+        ],
+        "title": "CapacityPendingError",
+        "type": "object"
+      },
+      "CapacityPendingResponse": {
+        "description": "The JSON body of a pending capacity response.",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/CapacityPendingError"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "CapacityPendingResponse",
+        "type": "object"
+      },
       "ComputeUpdatePayload": {
         "additionalProperties": false,
         "description": "New compute configuration.",
@@ -1729,7 +1789,7 @@
     },
     "/api/atlas/images/{image_id}": {
       "delete": {
-        "description": "Retires an Available or Failed image that the tenant owns. A cleanup job removes the stored artifacts and remaining host snapshot data of an unused Machine image. Any other image becomes Archived and keeps its artifacts.",
+        "description": "Retires an Available or Failed image that the tenant owns. A cleanup job removes the stored artifacts and remaining host snapshot data of an unused Machine image. Any other image becomes Archived and keeps its artifacts. An image that is already Deleting or Archived keeps that status and answers again.",
         "operationId": "delete_image",
         "parameters": [
           {
@@ -1761,7 +1821,7 @@
                 }
               }
             },
-            "description": "Deletion started. Poll the image route."
+            "description": "The image is retired. Poll the image route while it is Deleting."
           },
           "409": {
             "description": "Another tenant owns this System image."
@@ -2228,6 +2288,26 @@
               }
             },
             "description": "The virtual machine request is stored."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapacityPendingResponse"
+                }
+              }
+            },
+            "description": "Host capacity is pending. Retry after the reported interval.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before another create request.",
+                "required": true,
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Create VM",

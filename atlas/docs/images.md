@@ -43,7 +43,7 @@ Metal snapshot staging -> signed multipart parts -> object storage
 
 Atlas saves both multipart upload IDs before it asks Metal to start. A failed start or finalization marks the image Failed and keeps the source Metal Server, snapshot ID, object keys, and upload IDs.
 
-Retry Transfer uses these durable values. It does not create a second image record. Atlas does not log signed URLs.
+Retry Transfer uses these durable values for a Failed Machine or System image that came from a virtual machine. It does not create a second image record. Atlas does not log signed URLs.
 
 ## Listing
 
@@ -55,7 +55,7 @@ Pass `image_type` as `system` or `machine` to return only that type. Omit it to 
 
 ## Retirement and deletion
 
-An Available or Failed image can be retired. Retirement always disables the image, so no new virtual machine can use it.
+An Available or Failed image can be retired. Retirement always disables the image, so no new virtual machine can use it. An image that is already `Deleting` or `Archived` is retired, so the request answers with that status and changes nothing.
 
 Atlas reclaims the stored artifacts only when nothing needs them. A Machine image that no virtual machine uses becomes `Deleting` and queues a cleanup job. Every other image becomes `Archived` and keeps its artifacts. A System image is shared, so it always becomes `Archived`.
 
